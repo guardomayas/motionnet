@@ -67,7 +67,7 @@ def animate_sample(d, idx=0, stride=1, interval=None):
 
     span     = 2 * d.half_px
     t_s      = np.arange(len(vel)) / d.fps
-    half_deg = (d.eye_size - 1) / 2 * d.delta_phi_deg + d.delta_phi_deg / 2
+    half_deg = (d.eye_size - 1) / 2 * d.deg_per_tap + d.deg_per_tap / 2
     vmin, vmax = np.percentile(movie, [1, 99])
 
     fig, axs = plt.subplots(1, 3, figsize=(15, 4), layout="constrained")
@@ -83,7 +83,7 @@ def animate_sample(d, idx=0, stride=1, interval=None):
                        extent=[-half_deg, half_deg, -half_deg, half_deg])
     axs[1].set_xlabel("azimuth (deg)")
     axs[1].set_ylabel("elevation (deg)")
-    axs[1].set_title(f"{d.eye_size}x{d.eye_size} receptors")
+    axs[1].set_title(f"{d.eye_size}×{d.eye_size} taps @ {d.deg_per_tap:.1f}°")
 
     axs[2].plot(t_s, vel[:, 0], label="vx", lw=1)
     axs[2].plot(t_s, vel[:, 1], label="vy", lw=1)
