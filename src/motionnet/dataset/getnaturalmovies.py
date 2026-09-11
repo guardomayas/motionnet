@@ -1,4 +1,6 @@
-import os
+"""Translating van Hateren crops rendered onto a fly receptor lattice."""
+
+import json
 import warnings
 from pathlib import Path
 
@@ -8,6 +10,61 @@ from scipy.ndimage import gaussian_filter, map_coordinates, spline_filter
 from torch.utils.data import Dataset
 
 VH_SHAPE = (1024, 1536)
+
+
+# ----------------------------------------------------------------------
+# Corpus helpers
+# ----------------------------------------------------------------------
+def split_images(data_path, n_images=200, val_frac=0.2, seed=0, stride=1):
+    """Split .iml files into disjoint train/val lists.
+
+    Van Hateren images are numbered by acquisition, so consecutive files are
+    often the same location minutes apart. `stride` thins the corpus; the
+    permutation then keeps near-duplicates from straddling the split.
+    """
+    files = sorted(Path(data_path).glob("*.iml"))[::stride][:n_images]
+    if not files:
+        raise FileNotFoundError(f"no .iml files under {data_path}")
+    perm = np.random.default_rng(seed).permutation(len(files))
+    n_val = int(round(val_frac * len(files)))
+    val = [files[i] for i in perm[:n_val]]
+    train = [files[i] for i in perm[n_val:]]
+    return train, val
+
+
+def build_coeff_cache(files, out_path, sigma_px, log_image=True,
+                      normalize_images=True):
+    """Blur + spline-prefilter each image once; store as a float32 .npy.
+
+    Writes a sidecar .json recording the file list and settings, so a stale
+    or reordered cache is caught on load rather than silently pairing the
+    wrong coefficients with the wrong scene.
+    """
+    out_path = Path(out_path)
+    files = [Path(f) for f in files]
+    arr = np.lib.format.open_memmap(out_path, mode="w+", dtype=np.float32,
+                                    shape=(len(files), *VH_SHAPE))
+    for i, f in enumerate(files):
+        img = np.fromfile(f, dtype=">u2").reshape(VH_SHAPE).astype(np.float32)
+        if log_image:
+            img = np.log1p(img)
+        if normalize_images:
+            img = (img - img.mean()) / (img.std() + 1e-8)
+        if sigma_px > 0:
+            img = gaussian_filter(img, sigma=sigma_px, mode="reflect",
+                                  truncate=3.0)
+        arr[i] = spline_filter(img, order=3, output=np.float32)
+        if i % 50 == 0:
+            print(f"  {i}/{len(files)}")
+    arr.flush()
+
+    out_path.with_suffix(".json").write_text(json.dumps({
+        "files": [str(f) for f in files],
+        "sigma_px": float(sigma_px),
+        "log_image": bool(log_image),
+        "normalize_images": bool(normalize_images),
+    }))
+    return out_path
 
 
 class GetNaturalMovies(Dataset):
@@ -31,11 +88,12 @@ class GetNaturalMovies(Dataset):
 
     def __init__(
         self,
-        data_path,
-        batch_idx=0,
-        batch_size=5,
+        data_path=None,
+        files=None,                 # explicit list; overrides globbing
+        n_images=None,              # take the first N when globbing
         log_image=True,
         normalize_images=True,
+        coeff_cache=None,           # path to a build_coeff_cache() .npy
         # --- eye geometry ---
         blur_px=13,                 # acceptance width in source px; fixes Δρ
         spacing_px=None,            # receptor lattice; None -> = blur_px
@@ -70,19 +128,40 @@ class GetNaturalMovies(Dataset):
             raise ValueError("bounds_mode must be 'reject' or 'reflect'")
 
         self.data_path = data_path
-        self.batch_idx = int(batch_idx)
-        self.batch_size = int(batch_size)
+        if files is not None:
+            self.files = [Path(f) for f in files]
+        else:
+            if data_path is None:
+                raise ValueError("pass either `files` or `data_path`")
+            self.files = sorted(Path(data_path).glob("*.iml"))[:n_images]
+        if not self.files:
+            raise FileNotFoundError("no .iml files found")
+
+        self.n_imgs = len(self.files)
+        self.names = [f.name for f in self.files]
+        # Stable identity for seeding: the van Hateren image number, not the
+        # position in this split, so a sample's trace is unchanged by
+        # train/val slicing.
+        self._file_ids = [
+            int("".join(c for c in f.stem if c.isdigit()) or i)
+            for i, f in enumerate(self.files)
+        ]
+        self.H, self.W = VH_SHAPE
+
         self.log_image = log_image
         self.normalize_images = normalize_images
 
         self.eye_size = int(eye_size)
         self.blur_px = float(blur_px)
         self.spacing_px = float(blur_px if spacing_px is None else spacing_px)
-        self.oversample = self.blur_px / self.spacing_px   # 1.0 = one/ommatidium
+        self.oversample = self.blur_px / self.spacing_px  # 1.0 = one/ommatidium
         self.delta_phi_deg = float(delta_phi_deg)
-        self.dpp = self.delta_phi_deg / self.blur_px       # deg/px set by optics
+        self.dpp = self.delta_phi_deg / self.blur_px      # deg/px set by optics
         self.deg_per_tap = self.delta_phi_deg / self.oversample
         self.blur = blur
+        # Acceptance function width (source px), Δρ as an FWHM -> sigma.
+        self.sigma_px = (self.blur_px * float(rho_phi_ratio) / 2.3548
+                         if blur else 0.0)
 
         self.T = int(frames_per_segment)
         self.fps = float(fps)
@@ -94,7 +173,7 @@ class GetNaturalMovies(Dataset):
         vs = ((float(vel_std_deg_s),) * 2 if np.isscalar(vel_std_deg_s)
               else tuple(map(float, vel_std_deg_s)))
         self.vel_std_deg_s = vs
-        self.vel_std = tuple(v / self.dpp for v in vs)     # -> source px/s
+        self.vel_std = tuple(v / self.dpp for v in vs)    # -> source px/s
         self.vel_corr = float(vel_corr)
         self.start_jitter = float(start_jitter)
 
@@ -109,13 +188,6 @@ class GetNaturalMovies(Dataset):
         self.movie_format = movie_format
         self.dtype = dtype
 
-        self.batch_imgs, self.names = self._load_batch()
-        self.n_imgs, self.H, self.W = self.batch_imgs.shape
-
-        # Acceptance function width (source px).
-        self.sigma_px = (self.blur_px * float(rho_phi_ratio) / 2.3548
-                         if blur else 0.0)
-
         # Excursion budget: half the eye span, the start jitter, and a margin
         # for the blur's mirrored tails at the image border.
         self.half_px = (self.eye_size - 1) / 2 * self.spacing_px
@@ -127,10 +199,9 @@ class GetNaturalMovies(Dataset):
                 f"eye spans {2 * self.half_px:.0f} px, too large for "
                 f"{VH_SHAPE} with jitter {self.start_jitter} and blur margin "
                 f"{edge:.0f}")
-
         self._check_excursion_budget()
 
-        self._coeffs = np.stack([self._prep(im) for im in self.batch_imgs])
+        self._coeffs = self._load_coeffs(coeff_cache)
 
         off = (np.arange(self.eye_size)
                - (self.eye_size - 1) / 2) * self.spacing_px
@@ -141,6 +212,61 @@ class GetNaturalMovies(Dataset):
         self._n_draws = 0       # OU draws made, including rejected ones
         self._n_fallback = 0    # samples that exhausted max_tries
         self._warned = False
+
+    # ------------------------------------------------------------------
+    # Images
+    # ------------------------------------------------------------------
+    def _load_coeffs(self, coeff_cache):
+        """Blurred spline coefficients, from cache if it matches this config."""
+        if coeff_cache is not None:
+            path = Path(coeff_cache)
+            if path.exists():
+                self._check_cache(path)
+                return np.load(path, mmap_mode="r")
+            warnings.warn(f"{path} not found; prefiltering in memory instead. "
+                          f"Run build_coeff_cache() to create it.",
+                          RuntimeWarning, stacklevel=3)
+
+        print(f"Prefiltering {len(self.files)} images.")
+        return np.stack([self._prep(self.source_image(i))
+                         for i in range(self.n_imgs)])
+
+    def _check_cache(self, path):
+        """Coefficients are indexed positionally, so the file list must match."""
+        meta_path = path.with_suffix(".json")
+        if not meta_path.exists():
+            warnings.warn(f"{path} has no sidecar .json; cannot verify it "
+                          f"matches this file list and sigma_px.",
+                          RuntimeWarning, stacklevel=4)
+            return
+        meta = json.loads(meta_path.read_text())
+        if [str(f) for f in self.files] != meta["files"]:
+            raise ValueError(f"{path} was built from a different file list "
+                             f"(or a different order); rebuild it")
+        if not np.isclose(meta["sigma_px"], self.sigma_px):
+            raise ValueError(f"{path} was built with sigma_px="
+                             f"{meta['sigma_px']:.3f}, this dataset wants "
+                             f"{self.sigma_px:.3f}; rebuild it")
+
+    def source_image(self, i, dtype=np.float32):
+        """Raw (log, z-scored) image i -- for plotting, not rendering.
+
+        Re-reads from disk each call; never use this inside __getitem__.
+        """
+        img = np.fromfile(self.files[i], dtype=">u2").reshape(VH_SHAPE)
+        img = img.astype(dtype)
+        if self.log_image:
+            img = np.log1p(img)                   # safe at raw == 0
+        if self.normalize_images:
+            img = (img - img.mean()) / (img.std() + 1e-8)
+        return img
+
+    def _prep(self, im):
+        """Blur by the acceptance function, then take spline coefficients."""
+        if self.sigma_px > 0:
+            im = gaussian_filter(im, sigma=self.sigma_px,
+                                 mode="reflect", truncate=3.0)
+        return spline_filter(im, order=3, output=np.float32)
 
     # ------------------------------------------------------------------
     # Bounds diagnostics
@@ -154,14 +280,15 @@ class GetNaturalMovies(Dataset):
     def _check_excursion_budget(self):
         """Warn up front if the excursion is likely to exceed the image."""
         sx, sy = self._pos_std_px()
+        mode = ("many redraws" if self.bounds_mode == "reject"
+                else "frequent reflections")
         for axis, s, lim in (("x", sx, self.lim_x), ("y", sy, self.lim_y)):
             if s > 0 and lim / s < 3.0:
                 warnings.warn(
                     f"excursion budget is tight on {axis}: limit {lim:.0f} px "
                     f"is {lim / s:.1f} sigma of the position spread "
                     f"({s:.0f} px). In '{self.bounds_mode}' mode this means "
-                    f"{'many redraws' if self.bounds_mode == 'reject' else 'frequent reflections'}. "
-                    f"Reduce vel_std_deg_s (now {self.vel_std_deg_s}), "
+                    f"{mode}. Reduce vel_std_deg_s (now {self.vel_std_deg_s}), "
                     f"frames_per_segment (now {self.T}), or start_jitter "
                     f"(now {self.start_jitter:.0f}).",
                     RuntimeWarning, stacklevel=3)
@@ -193,38 +320,6 @@ class GetNaturalMovies(Dataset):
                 RuntimeWarning, stacklevel=3)
 
     # ------------------------------------------------------------------
-    # Images
-    # ------------------------------------------------------------------
-    def _load_batch(self, dtype=np.float32):
-        path = Path(self.data_path)
-        iml_files = sorted(path.glob("*.iml"))
-        start = self.batch_idx * self.batch_size
-        batch_files = iml_files[start:start + self.batch_size]
-        if not batch_files:
-            raise FileNotFoundError(f"no .iml files for batch {self.batch_idx}")
-        print(f"Found {len(iml_files)} .iml in {path}; loading batch "
-              f"{self.batch_idx} ({len(batch_files)} images).")
-
-        imgs, names = [], []
-        for fname in batch_files:
-            raw = np.fromfile(fname, dtype=">u2").reshape(VH_SHAPE)
-            names.append(os.path.basename(fname))
-            img = raw.astype(dtype)
-            if self.log_image:
-                img = np.log1p(img)                  # safe at raw == 0
-            if self.normalize_images:
-                img = (img - img.mean()) / (img.std() + 1e-8)
-            imgs.append(img)
-        return np.stack(imgs), names
-
-    def _prep(self, im):
-        """Blur by the acceptance function, then take spline coefficients."""
-        if self.sigma_px > 0:
-            im = gaussian_filter(im, sigma=self.sigma_px,
-                                 mode="reflect", truncate=3.0)
-        return spline_filter(im, order=3, output=np.float32)
-
-    # ------------------------------------------------------------------
     # Velocity
     # ------------------------------------------------------------------
     @staticmethod
@@ -245,7 +340,7 @@ class GetNaturalMovies(Dataset):
 
         noise = rng.multivariate_normal(np.zeros(2), cov, size=self.T)
         vel = np.empty((self.T, 2))
-        vel[0] = rng.multivariate_normal(np.zeros(2), cov)   # stationary start
+        vel[0] = rng.multivariate_normal(np.zeros(2), cov)  # stationary start
         b = np.sqrt(1 - alpha ** 2)
         for t in range(1, self.T):
             vel[t] = alpha * vel[t - 1] + b * noise[t]
@@ -282,11 +377,13 @@ class GetNaturalMovies(Dataset):
         for tries in range(1, self.max_tries + 1):
             vel, pos = self._draw_ou(rng)
             if self._in_bounds(pos):
-                return vel.astype(np.float32), pos.astype(np.float32), tries, False
+                return (vel.astype(np.float32), pos.astype(np.float32),
+                        tries, False)
 
         # Exhausted: fall back to reflection rather than looping forever.
         vel, pos = self._apply_reflection(pos)
-        return vel.astype(np.float32), pos.astype(np.float32), self.max_tries, True
+        return (vel.astype(np.float32), pos.astype(np.float32),
+                self.max_tries, True)
 
     # ------------------------------------------------------------------
     # Rendering
@@ -323,9 +420,12 @@ class GetNaturalMovies(Dataset):
         return self.n_imgs * self.samples_per_image
 
     def __getitem__(self, idx):
+        if not 0 <= idx < len(self):
+            raise IndexError(
+                f"index {idx} out of range for {len(self)} samples")
         img_idx, rep = divmod(idx, self.samples_per_image)
-        global_idx = self.batch_idx * self.batch_size + img_idx
-        rng = np.random.default_rng((self.seed, global_idx, rep))
+        file_id = self._file_ids[img_idx]
+        rng = np.random.default_rng((self.seed, file_id, rep))
 
         vel, pos, tries, fell_back = self.generate_velocity_trace_2d(rng)
         self._tally(tries, fell_back)
@@ -370,6 +470,5 @@ class GetNaturalMovies(Dataset):
             "gaze_center": torch.tensor([cx, cy], dtype=self.dtype),
             "n_tries": torch.tensor(tries),
             "bounds_fallback": torch.tensor(fell_back),
-            "image_idx": global_idx,
-            "name": self.names[img_idx],
+            "image_idx": file_id,
         }
