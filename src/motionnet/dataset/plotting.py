@@ -60,7 +60,7 @@ def animate_sample(d, idx=0, stride=1, interval=None):
     pos    = s["pos_px"].numpy()            # (T, 2): col 0 = x, col 1 = y
     vel    = s["vel_deg_s"].numpy()
     cx, cy = s["gaze_center"].numpy()
-    img    = d.batch_imgs[idx // d.samples_per_image]
+    img    = d.source_image(idx// d.samples_per_image)
 
     if interval is None:
         interval = 1000 * stride / d.fps    # ms per displayed frame
