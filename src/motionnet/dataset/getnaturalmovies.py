@@ -1,5 +1,6 @@
 """Translating van Hateren crops rendered onto a fly receptor lattice."""
 
+import hashlib
 import json
 import warnings
 from pathlib import Path
@@ -139,12 +140,14 @@ class GetNaturalMovies(Dataset):
 
         self.n_imgs = len(self.files)
         self.names = [f.name for f in self.files]
-        # Stable identity for seeding: the van Hateren image number, not the
+        # Stable identity for seeding: a hash of the filename, not the
         # position in this split, so a sample's trace is unchanged by
-        # train/val slicing.
+        # train/val slicing. (A previous version concatenated digit
+        # characters from the stem, which silently collides for stems that
+        # mix digits from more than one field, e.g. "imk01_v2" vs "imk012".)
         self._file_ids = [
-            int("".join(c for c in f.stem if c.isdigit()) or i)
-            for i, f in enumerate(self.files)
+            int(hashlib.sha256(f.stem.encode()).hexdigest()[:15], 16)
+            for f in self.files
         ]
         self.H, self.W = VH_SHAPE
 
