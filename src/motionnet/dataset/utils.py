@@ -13,6 +13,11 @@ class DiskCachedDataset(Dataset):
     def __len__(self):
         return len(self.base_ds)
 
+    def __getattr__(self, name):
+        # Only reached when normal attribute lookup fails, so this can't
+        # shadow anything set in __init__ or recurse on those.
+        return getattr(self.base_ds, name)
+
     def _init_mmaps(self):
         sample0 = self.base_ds[0]
         self._keys = list(sample0)
