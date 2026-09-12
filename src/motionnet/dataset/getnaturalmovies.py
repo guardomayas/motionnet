@@ -466,5 +466,5 @@ class GetNaturalMovies(Dataset):
             "gaze_center": torch.tensor([cx, cy], dtype=self.dtype),
             "n_tries": torch.tensor(tries),
             "bounds_fallback": torch.tensor(fell_back),
-            "image_idx": file_id,
+            "image_idx": torch.tensor(file_id),
         }
