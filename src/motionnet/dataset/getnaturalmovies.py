@@ -389,17 +389,13 @@ class GetNaturalMovies(Dataset):
     # Rendering
     # ------------------------------------------------------------------
     def render_movie(self, img_idx, cx, cy, pos):
-        n = self.eye_size
-        out = np.empty((self.T, n, n), dtype=np.float32)
         coeffs = self._coeffs[img_idx]
-        for t in range(self.T):
-            dx, dy = pos[t]
-            out[t] = map_coordinates(
-                coeffs,
-                [self._gy + cy + dy, self._gx + cx + dx],
-                order=3, mode="reflect", prefilter=False,
-            )
-        return out
+        dx = pos[:, 0, None, None]
+        dy = pos[:, 1, None, None]
+        yy = self._gy[None] + cy + dy    # (T, n, n)
+        xx = self._gx[None] + cx + dx
+        return map_coordinates(coeffs, [yy, xx], order=3, mode="reflect",
+                            prefilter=False).astype(np.float32)
 
     def add_gray_padding(self, movie):
         gray = np.full((self.gray_frames, *movie.shape[1:]),
