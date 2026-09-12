@@ -5,23 +5,22 @@ requires-python = ">=3.10"
 dependencies = [
     "numpy",
     "einops",
-    "hydra-core",
-    "wandb",
     "h5py",
     "matplotlib",
     "seaborn",
     "scipy",
-    "tqdm" 
+    "tqdm"
 ]
 
 [project.optional-dependencies]
 cpu = ["torch>=2.4,<2.5", "torchvision", "imageio", "pooch"]
+tracking = ["hydra-core", "wandb"]
 
 [dependency-groups]
 dev = ["pytest", "ruff", "ipykernel>=7.3.0"]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "editables"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
