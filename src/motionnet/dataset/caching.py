@@ -5,6 +5,31 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+import shutil
+import warnings
+
+
+def _fingerprint_diff(stored, wanted):
+    """Human-readable diff of two fingerprint strings. Falls back to repr."""
+    try:
+        a, b = json.loads(stored), json.loads(wanted)
+    except (TypeError, ValueError):
+        return f"  stored: {stored!r}\n  wanted: {wanted!r}"
+
+    def flat(d, prefix=""):
+        out = {}
+        for k, v in d.items():
+            if isinstance(v, dict):
+                out.update(flat(v, f"{prefix}{k}."))
+            else:
+                out[f"{prefix}{k}"] = v
+        return out
+
+    fa, fb = flat(a), flat(b)
+    lines = [f"  {k}: {fa.get(k)!r} -> {fb.get(k)!r}"
+             for k in sorted(set(fa) | set(fb)) if fa.get(k) != fb.get(k)]
+    return "\n".join(lines) or "  (no scalar differences; check key order)"
+
 
 class DiskCachedDataset(Dataset):
     """Memoizes a deterministic base dataset to per-key memmaps on disk.
@@ -19,15 +44,27 @@ class DiskCachedDataset(Dataset):
     instead of silently pairing stale cached samples with a new config.
     """
 
-    def __init__(self, base_ds, cache_dir, fingerprint=None):
+    def __init__(self, base_ds, cache_dir, fingerprint=None, on_mismatch="raise"):
+        if on_mismatch not in ("raise", "rebuild"):
+            raise ValueError("on_mismatch must be 'raise' or 'rebuild'")
         self.base_ds, self.cache_dir = base_ds, Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.fingerprint = fingerprint
-        self._mmaps = None          # opened lazily, once per worker process
+        self.on_mismatch = on_mismatch
+        self._mmaps = None
         self._keys, self._specs = self._ensure_files()
-
-    def __len__(self):
-        return len(self.base_ds)
+        
+    def _stale(self, reason, diff=""):
+        """Either explain and raise, or wipe the directory and start over."""
+        msg = f"{self.cache_dir} is stale: {reason}"
+        if diff:
+            msg += f"\n{diff}"
+        if self.on_mismatch == "raise":
+            raise ValueError(msg + "\n\nPass on_mismatch='rebuild' to discard "
+                                   "and regenerate, or use a different cache_dir.")
+        warnings.warn(msg + "\nRebuilding.", RuntimeWarning, stacklevel=3)
+        shutil.rmtree(self.cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def __getattr__(self, name):
         # Only reached when normal attribute lookup fails. Unpickling (a
@@ -43,23 +80,21 @@ class DiskCachedDataset(Dataset):
         return self.cache_dir / "_meta.json"
 
     def _ensure_files(self):
-        """Create (or validate) the on-disk cache. Runs once, single-process."""
         n = len(self.base_ds)
         meta_path = self._meta_path()
 
         if meta_path.exists():
             meta = json.loads(meta_path.read_text())
             if meta["n"] != n:
-                raise ValueError(
-                    f"{self.cache_dir} was built for {meta['n']} samples, "
-                    f"this dataset has {n}; use a different cache_dir or "
-                    f"delete it to rebuild.")
-            if meta.get("fingerprint") != self.fingerprint:
-                raise ValueError(
-                    f"{self.cache_dir} was built with fingerprint "
-                    f"{meta.get('fingerprint')!r}, this dataset was given "
-                    f"{self.fingerprint!r}; use a different cache_dir or "
-                    f"delete it to rebuild.")
+                self._stale(f"built for {meta['n']} samples, this dataset has {n}")
+            elif meta.get("fingerprint") != self.fingerprint:
+                self._stale("config fingerprint changed",
+                            _fingerprint_diff(meta.get("fingerprint"),
+                                              self.fingerprint))
+
+        # _stale() may have wiped the directory, so re-check rather than else.
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text())
             keys, specs = meta["keys"], meta["specs"]
         else:
             sample0 = self.base_ds[0]
