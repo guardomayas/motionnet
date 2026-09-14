@@ -456,6 +456,12 @@ class GetNaturalMovies(Dataset):
         cy = self.H / 2 + rng.uniform(-j, j)
 
         movie = self.render_movie(img_idx, cx, cy, pos)
+        
+        # Remove local luminance: the gaze window's mean depends on where it
+        # landed (sky vs foliage), which is a nuisance variable here. Done
+        # unconditionally so the input distribution doesn't depend on whether
+        # contrast is being manipulated.
+        movie = movie - movie.mean()
 
         # Contrast drawn independently of velocity, applied as gain on the
         # zero-mean movie; fixed-variance noise is what makes gain informative.
@@ -463,11 +469,13 @@ class GetNaturalMovies(Dataset):
         if self.contrast_range is not None:
             gain = float(rng.uniform(*self.contrast_range))
             movie = movie * gain
+        rms = float(movie.std())        # after gain, before noise
         if self.noise_std > 0:
             movie = movie + rng.normal(
                 0, self.noise_std, movie.shape).astype(np.float32)
 
         movie = self.add_gray_padding(movie)
+        
         pos = self.pad_position_trace(pos)
         vel = self.pad_velocity_trace(vel)
 
@@ -487,7 +495,10 @@ class GetNaturalMovies(Dataset):
                 vel / (self.blur_px * self.fps)).to(self.dtype),
             "vel_tap_frame": torch.from_numpy(
                 vel / (self.spacing_px * self.fps)).to(self.dtype),
-            "contrast": torch.tensor(gain, dtype=self.dtype),
+            "contrast_gain": torch.tensor(gain, dtype=self.dtype),
+            "contrast_rms": torch.tensor(rms, dtype=self.dtype),
+            "snr": torch.tensor(rms / self.noise_std if self.noise_std > 0 #amplitude ratio snr, some other Lit uses poser (snr^2)
+                                else float("inf"), dtype=self.dtype),
             "gaze_center": torch.tensor([cx, cy], dtype=self.dtype),
             "n_tries": torch.tensor(tries),
             "bounds_fallback": torch.tensor(fell_back),
