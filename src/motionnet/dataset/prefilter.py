@@ -58,6 +58,11 @@ class PrefilterConfig:
     def apply(self, img):
         """Run the full chain on one raw image -> float32 spline coefficients."""
         img = np.asarray(img, dtype=np.float32)
+        if img.min() < 0:
+            raise ValueError( #only deteces on normalized images
+                "apply() expects raw non-negative luminance; got data with "
+                f"min {img.min():.3g}. Applying the prefilter chain twice "
+                "widens Delta_rho by sqrt(2) and is otherwise silent.")
         if self.log_image:
             img = np.log1p(img)                       # safe at raw == 0
         if self.normalize_images:
