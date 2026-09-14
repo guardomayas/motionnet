@@ -1,95 +1,19 @@
 """Translating van Hateren crops rendered onto a fly receptor lattice."""
 
 import hashlib
-import json
 import warnings
 from pathlib import Path
 
 import numpy as np
 import torch
-from scipy.ndimage import gaussian_filter, map_coordinates, spline_filter
+from scipy.ndimage import map_coordinates
 from torch.utils.data import Dataset
 
-VH_SHAPE = (1024, 1536)
-
-
-# ----------------------------------------------------------------------
-# Corpus helpers
-# ----------------------------------------------------------------------
-def _valid_iml_files(data_path):
-    """List .iml files matching VH_SHAPE, skipping corrupt/truncated ones.
-
-    Van Hateren downloads occasionally include a partial or wrong-size file
-    (an interrupted copy, a different acquisition format); reshaping one of
-    those crashes build_coeff_cache deep into a run. Checking the raw byte
-    count up front is cheap and catches it before any work is wasted.
-    """
-    expected_bytes = VH_SHAPE[0] * VH_SHAPE[1] * 2  # big-endian uint16
-    files = sorted(Path(data_path).glob("*.iml"))
-    good = [f for f in files if f.stat().st_size == expected_bytes]
-    bad = [f for f in files if f.stat().st_size != expected_bytes]
-    if bad:
-        names = ", ".join(f.name for f in bad[:5])
-        warnings.warn(
-            f"skipping {len(bad)} .iml file(s) with unexpected size under "
-            f"{data_path} (expected {expected_bytes} bytes for {VH_SHAPE}): "
-            f"{names}{', ...' if len(bad) > 5 else ''}"
-        )
-    return good
-
-
-def split_images(data_path, n_images=200, val_frac=0.2, seed=0, stride=1):
-    """Split .iml files into disjoint train/val lists.
-
-    Van Hateren images are numbered by acquisition, so consecutive files are
-    often the same location minutes apart. `stride` thins the corpus; the
-    permutation then keeps near-duplicates from straddling the split.
-    """
-    files = _valid_iml_files(data_path)[::stride][:n_images]
-    if not files:
-        raise FileNotFoundError(f"no valid .iml files under {data_path}")
-    perm = np.random.default_rng(seed).permutation(len(files))
-    n_val = int(round(val_frac * len(files)))
-    val = [files[i] for i in perm[:n_val]]
-    train = [files[i] for i in perm[n_val:]]
-    return train, val
-
-
-def build_coeff_cache(files, out_path, sigma_px, log_image=True,
-                      normalize_images=True):
-    """Blur + spline-prefilter each image once; store as a float32 .npy.
-
-    Writes a sidecar .json recording the file list and settings, so a stale
-    or reordered cache is caught on load rather than silently pairing the
-    wrong coefficients with the wrong scene.
-    """
-    out_path = Path(out_path)
-    files = [Path(f) for f in files]
-    arr = np.lib.format.open_memmap(out_path, mode="w+", dtype=np.float32,
-                                    shape=(len(files), *VH_SHAPE))
-    for i, f in enumerate(files):
-        img = np.fromfile(f, dtype=">u2").reshape(VH_SHAPE).astype(np.float32)
-        if log_image:
-            img = np.log1p(img)
-        if normalize_images:
-            img = (img - img.mean()) / (img.std() + 1e-8)
-        if sigma_px > 0:
-            img = gaussian_filter(img, sigma=sigma_px, mode="reflect",
-                                  truncate=3.0)
-        arr[i] = spline_filter(img, order=3, output=np.float32)
-        if i % 50 == 0:
-            print(f"  {i}/{len(files)}")
-    arr.flush()
-
-    out_path.with_suffix(".json").write_text(json.dumps({
-        "files": [str(f) for f in files],
-        "sigma_px": float(sigma_px),
-        "log_image": bool(log_image),
-        "normalize_images": bool(normalize_images),
-    }))
-    return out_path
-
-
+from .corpus import VH_SHAPE, load_iml
+from .prefilter import (BLUR_TRUNCATE, BOUNDARY_MODE, SPLINE_ORDER,
+                        PrefilterConfig, check_cache, sigma_for)
+ 
+# Note bounds_mode is unrelated to prefilter.BOUNDARY_MODE
 class GetNaturalMovies(Dataset):
     """Translating van Hateren crops rendered onto a fly receptor lattice.
 
@@ -172,10 +96,6 @@ class GetNaturalMovies(Dataset):
             for f in self.files
         ]
         self.H, self.W = VH_SHAPE
-
-        self.log_image = log_image
-        self.normalize_images = normalize_images
-
         self.eye_size = int(eye_size)
         self.blur_px = float(blur_px)
         self.spacing_px = float(blur_px if spacing_px is None else spacing_px)
@@ -184,10 +104,21 @@ class GetNaturalMovies(Dataset):
         self.dpp = self.delta_phi_deg / self.blur_px      # deg/px set by optics
         self.deg_per_tap = self.delta_phi_deg / self.oversample
         self.blur = blur
+        
+        # Everything that determines the coefficients, in one object: it is
+        # what gets written to a cache's sidecar and what gets compared on
+        # load, so the build and the check cannot disagree.
+        self.cfg = PrefilterConfig(
+            sigma_px=sigma_for(blur_px, rho_phi_ratio, blur),
+            log_image=log_image,
+            normalize_images=normalize_images,
+        )
+        
         # Acceptance function width (source px), Δρ as an FWHM -> sigma.
-        self.sigma_px = (self.blur_px * float(rho_phi_ratio) / 2.3548
-                         if blur else 0.0)
-
+        self.sigma_px = self.cfg.sigma_px
+        self.log_image = self.cfg.log_image
+        self.normalize_images = self.cfg.normalize_images
+        
         self.T = int(frames_per_segment)
         self.fps = float(fps)
         self.gray_frames = int(round(gray_sec * fps))
@@ -216,7 +147,7 @@ class GetNaturalMovies(Dataset):
         # Excursion budget: half the eye span, the start jitter, and a margin
         # for the blur's mirrored tails at the image border.
         self.half_px = (self.eye_size - 1) / 2 * self.spacing_px
-        edge = 3.0 * self.sigma_px
+        edge = BLUR_TRUNCATE * self.sigma_px
         self.lim_y = self.H / 2 - self.half_px - self.start_jitter - edge
         self.lim_x = self.W / 2 - self.half_px - self.start_jitter - edge
         if min(self.lim_x, self.lim_y) <= 0:
@@ -246,52 +177,23 @@ class GetNaturalMovies(Dataset):
         if coeff_cache is not None:
             path = Path(coeff_cache)
             if path.exists():
-                self._check_cache(path)
-                return np.load(path, mmap_mode="r")
+                return check_cache(path, self.files, self.cfg)
             warnings.warn(f"{path} not found; prefiltering in memory instead. "
                           f"Run build_coeff_cache() to create it.",
                           RuntimeWarning, stacklevel=3)
-
+ 
         print(f"Prefiltering {len(self.files)} images.")
-        return np.stack([self._prep(self.source_image(i))
-                         for i in range(self.n_imgs)])
-
-    def _check_cache(self, path):
-        """Coefficients are indexed positionally, so the file list must match."""
-        meta_path = path.with_suffix(".json")
-        if not meta_path.exists():
-            warnings.warn(f"{path} has no sidecar .json; cannot verify it "
-                          f"matches this file list and sigma_px.",
-                          RuntimeWarning, stacklevel=4)
-            return
-        meta = json.loads(meta_path.read_text())
-        if [str(f) for f in self.files] != meta["files"]:
-            raise ValueError(f"{path} was built from a different file list "
-                             f"(or a different order); rebuild it")
-        if not np.isclose(meta["sigma_px"], self.sigma_px):
-            raise ValueError(f"{path} was built with sigma_px="
-                             f"{meta['sigma_px']:.3f}, this dataset wants "
-                             f"{self.sigma_px:.3f}; rebuild it")
+        return np.stack([self.cfg.apply(load_iml(f)) for f in self.files])
 
     def source_image(self, i, dtype=np.float32):
         """Raw (log, z-scored) image i -- for plotting, not rendering.
-
+ 
         Re-reads from disk each call; never use this inside __getitem__.
+        Shares `cfg` with the rendering path, so it cannot drift out of step
+        with the movies.
         """
-        img = np.fromfile(self.files[i], dtype=">u2").reshape(VH_SHAPE)
-        img = img.astype(dtype)
-        if self.log_image:
-            img = np.log1p(img)                   # safe at raw == 0
-        if self.normalize_images:
-            img = (img - img.mean()) / (img.std() + 1e-8)
-        return img
+        return self.cfg.source_image(self.files[i], dtype=dtype)
 
-    def _prep(self, im):
-        """Blur by the acceptance function, then take spline coefficients."""
-        if self.sigma_px > 0:
-            im = gaussian_filter(im, sigma=self.sigma_px,
-                                 mode="reflect", truncate=3.0)
-        return spline_filter(im, order=3, output=np.float32)
 
     # ------------------------------------------------------------------
     # Bounds diagnostics
@@ -419,8 +321,9 @@ class GetNaturalMovies(Dataset):
         dy = pos[:, 1, None, None]
         yy = self._gy[None] + cy + dy    # (T, n, n)
         xx = self._gx[None] + cx + dx
-        return map_coordinates(coeffs, [yy, xx], order=3, mode="reflect",
-                            prefilter=False).astype(np.float32)
+        return map_coordinates(coeffs, [yy, xx], order=SPLINE_ORDER,
+                               mode=BOUNDARY_MODE,
+                               prefilter=False).astype(np.float32)
 
     def add_gray_padding(self, movie):
         gray = np.full((self.gray_frames, *movie.shape[1:]),
@@ -456,7 +359,7 @@ class GetNaturalMovies(Dataset):
         cy = self.H / 2 + rng.uniform(-j, j)
 
         movie = self.render_movie(img_idx, cx, cy, pos)
-        
+
         # Remove local luminance: the gaze window's mean depends on where it
         # landed (sky vs foliage), which is a nuisance variable here. Done
         # unconditionally so the input distribution doesn't depend on whether
@@ -475,7 +378,7 @@ class GetNaturalMovies(Dataset):
                 0, self.noise_std, movie.shape).astype(np.float32)
 
         movie = self.add_gray_padding(movie)
-        
+
         pos = self.pad_position_trace(pos)
         vel = self.pad_velocity_trace(vel)
 
