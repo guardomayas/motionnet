@@ -30,8 +30,13 @@ class DiskCachedDataset(Dataset):
         return len(self.base_ds)
 
     def __getattr__(self, name):
-        # Only reached when normal attribute lookup fails, so this can't
-        # shadow anything set in __init__ or recurse on those.
+        # Only reached when normal attribute lookup fails. Unpickling (a
+        # DataLoader worker under `spawn`) and copy.deepcopy both build an
+        # empty instance and probe it before restoring __dict__; forwarding
+        # then would look up `base_ds`, fail, and land back here. Reading
+        # __dict__ directly is the one lookup that never re-enters.
+        if "base_ds" not in self.__dict__:
+            raise AttributeError(name)
         return getattr(self.base_ds, name)
 
     def _meta_path(self):

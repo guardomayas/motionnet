@@ -73,20 +73,20 @@ def load_vanhateren_raw(path, dtype=np.float32):
     return img.astype(dtype)
 
 
-def scale_luminance(img, percentile_scale=99, clip=True, eps=1e-8):
-    """
-    Scale image for training after filtering.
-    """
-    img = img.astype(np.float32)
+# def scale_luminance(img, percentile_scale=99, clip=True, eps=1e-8):
+#     """
+#     Scale image for training after filtering.
+#     """
+#     img = img.astype(np.float32)
 
-    if percentile_scale is not None:
-        scale = np.percentile(img, percentile_scale)
-        img = img / (scale + eps)
+#     if percentile_scale is not None:
+#         scale = np.percentile(img, percentile_scale)
+#         img = img / (scale + eps)
 
-    if clip:
-        img = np.clip(img, 0, 1)
+#     if clip:
+#         img = np.clip(img, 0, 1)
 
-    return img.astype(np.float32)
+#     return img.astype(np.float32)
 
 def log_image(path, eps=1.0):
     """Log-luminance. Percentile scaling is redundant here: dividing by a
