@@ -1,12 +1,11 @@
 import json
+import shutil
+import warnings
 from pathlib import Path
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-
-import shutil
-import warnings
 
 
 def _fingerprint_diff(stored, wanted):
@@ -40,8 +39,9 @@ class DiskCachedDataset(Dataset):
     create-vs-truncate race between concurrent workers.
 
     A `_meta.json` sidecar records sample count, per-key shape/dtype, and
-    an optional caller-supplied `fingerprint`; a mismatch on reopen raises
-    instead of silently pairing stale cached samples with a new config.
+    an optional caller-supplied `fingerprint`; a mismatch on reopen either
+    raises or rebuilds, per `on_mismatch`, instead of silently pairing
+    stale cached samples with a new config.
     """
 
     def __init__(self, base_ds, cache_dir, fingerprint=None, on_mismatch="raise"):
@@ -51,20 +51,13 @@ class DiskCachedDataset(Dataset):
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.fingerprint = fingerprint
         self.on_mismatch = on_mismatch
-        self._mmaps = None
+        self._mmaps = None          # opened lazily, once per worker process
         self._keys, self._specs = self._ensure_files()
-        
-    def _stale(self, reason, diff=""):
-        """Either explain and raise, or wipe the directory and start over."""
-        msg = f"{self.cache_dir} is stale: {reason}"
-        if diff:
-            msg += f"\n{diff}"
-        if self.on_mismatch == "raise":
-            raise ValueError(msg + "\n\nPass on_mismatch='rebuild' to discard "
-                                   "and regenerate, or use a different cache_dir.")
-        warnings.warn(msg + "\nRebuilding.", RuntimeWarning, stacklevel=3)
-        shutil.rmtree(self.cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def __len__(self):
+        # Must live on the class: len() reads the type slot directly and
+        # never falls through to __getattr__ below.
+        return len(self.base_ds)
 
     def __getattr__(self, name):
         # Only reached when normal attribute lookup fails. Unpickling (a
@@ -79,7 +72,20 @@ class DiskCachedDataset(Dataset):
     def _meta_path(self):
         return self.cache_dir / "_meta.json"
 
+    def _stale(self, reason, diff=""):
+        """Either explain and raise, or wipe the directory and start over."""
+        msg = f"{self.cache_dir} is stale: {reason}"
+        if diff:
+            msg += f"\n{diff}"
+        if self.on_mismatch == "raise":
+            raise ValueError(msg + "\n\nPass on_mismatch='rebuild' to discard "
+                                   "and regenerate, or use a different cache_dir.")
+        warnings.warn(msg + "\nRebuilding.", RuntimeWarning, stacklevel=3)
+        shutil.rmtree(self.cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
     def _ensure_files(self):
+        """Create (or validate) the on-disk cache. Runs once, single-process."""
         n = len(self.base_ds)
         meta_path = self._meta_path()
 
@@ -92,7 +98,7 @@ class DiskCachedDataset(Dataset):
                             _fingerprint_diff(meta.get("fingerprint"),
                                               self.fingerprint))
 
-        # _stale() may have wiped the directory, so re-check rather than else.
+        # _stale() may have wiped the directory, so re-test rather than else.
         if meta_path.exists():
             meta = json.loads(meta_path.read_text())
             keys, specs = meta["keys"], meta["specs"]
@@ -134,7 +140,8 @@ class DiskCachedDataset(Dataset):
             for k in self._keys:
                 v = sample[k]
                 self._mmaps[k][idx] = v.numpy() if torch.is_tensor(v) else v
+                self._mmaps[k].flush()   # data before flag; nothing else orders them
             self._filled[idx] = True
             return sample
         return {k: torch.from_numpy(np.array(self._mmaps[k][idx]))
-               for k in self._keys}
+                for k in self._keys}
