@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 from scipy.ndimage import gaussian_filter, spline_filter
 
-from .corpus import VH_SHAPE, load_iml
+from .vanhateren_utils import VH_SHAPE, load_iml
 
 # `spline_filter` and `map_coordinates` must agree on the boundary mode, or the
 # prefilter is not inverted near the image border. Unrelated to the dataset's

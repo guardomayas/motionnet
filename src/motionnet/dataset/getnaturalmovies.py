@@ -9,7 +9,7 @@ import torch
 from scipy.ndimage import map_coordinates
 from torch.utils.data import Dataset
 
-from .corpus import VH_SHAPE, load_iml
+from .vanhateren_utils import VH_SHAPE, load_iml
 from .prefilter import (BLUR_TRUNCATE, BOUNDARY_MODE, SPLINE_ORDER,
                         PrefilterConfig, check_cache, sigma_for)
  
