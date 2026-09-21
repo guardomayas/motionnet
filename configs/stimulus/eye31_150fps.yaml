@@ -14,7 +14,7 @@ movie:
   start_jitter: 40
   contrast_range: null
   noise_std: 0.0
-  frames_per_segment: 225
+  frames_per_segment: 200
   fps: 150
   vel_std_deg_s: [120, 70]
   samples_per_image: 6
