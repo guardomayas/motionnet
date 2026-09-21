@@ -14,8 +14,8 @@ model:
   out_gain: 1.0
   initial_threshold: 0.0
   initial_gain: 1.0
-  input_noise_std: 0.0     # 0.10 * sqrt(fps/75)
-  layer_noise_std: 0.0
+  input_noise_std: 0.1414     # 0.10 * sqrt(fps/75)
+  layer_noise_std: 0.10
 
 loss:
   lambda_sp: 0.0

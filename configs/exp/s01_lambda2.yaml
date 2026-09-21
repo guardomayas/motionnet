@@ -1,0 +1,6 @@
+name: s01_lambda2
+data: eye31_150fps
+model: base
+grid:
+  loss.lambda_2: [0.0, 0.01, 0.04, 0.1]
+  optim.seed: [0, 1, 2, 3, 4]
