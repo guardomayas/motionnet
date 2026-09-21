@@ -11,6 +11,7 @@ parameters matter.
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from tqdm.auto import tqdm
 
 import numpy as np
 from scipy.ndimage import gaussian_filter, spline_filter
@@ -103,14 +104,14 @@ def build_coeff_cache(files, out_path, cfg):
     files = [Path(f) for f in files]
     arr = np.lib.format.open_memmap(out_path, mode="w+", dtype=np.float32,
                                     shape=(len(files), *VH_SHAPE))
-    for i, f in enumerate(files):
+    for i, f in enumerate(tqdm(files, desc=out_path.name)):
         arr[i] = cfg.apply(load_iml(f))
         if i % 50 == 0:
             print(f"  {i}/{len(files)}")
     arr.flush()
 
     out_path.with_suffix(".json").write_text(json.dumps(_metadata(cfg, files)))
-    return out_path
+    return out_path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def check_cache(path, files, cfg):

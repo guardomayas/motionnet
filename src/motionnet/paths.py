@@ -1,32 +1,37 @@
+
+# src/motionnet/paths.py
 """Environment-dependent paths. Importable from notebooks and cluster jobs."""
 
 import shutil
 from pathlib import Path
 import yaml
 
-DRIVE = Path("/content/drive/MyDrive/NUIN")
+import os
+from dataclasses import dataclass
 
+@dataclass(frozen=True)
+class Paths:
+    corpus: Path
+    coeffs: Path
+    movies: Path
+    ckpt: Path
 
-def setup(in_colab=False, n_images=None):
-    """Resolve DATA_PATH and CKPT_DIR, copying images to local disk on Colab.
-
-    Drive is high-latency per file, so reading .iml files straight off the
-    mount costs minutes at dataset construction. Copy once to /content.
-    """
-    if not in_colab:
-        data = Path("~/NUIN/van_hateren/vanhateren_iml").expanduser()
-        ckpt = Path("runs")
+def setup(in_colab: bool) -> Paths:
+    if in_colab:
+        if not os.path.ismount("/content/drive"):
+            raise RuntimeError("Drive not mounted")
+        root = Path("/content/drive/MyDrive/NUIN/motionnet")
+        p = Paths(corpus=Path("/content/vanhateren"),       # whatever setup() does now
+                  coeffs=root / "cache",                    # persistent: Drive
+                  movies=Path("/content/movie_cache"),      # scratch: local disk
+                  ckpt=root / "ckpt")
     else:
-        data = Path("/content/vanhateren")
-        if not data.exists():
-            data.mkdir(parents=True)
-            src = sorted((DRIVE / "van_hateren").glob("*.iml"))[:n_images]
-            for f in src:
-                shutil.copy(f, data)
-        ckpt = DRIVE / "motionnet_runs"
-
-    ckpt.mkdir(parents=True, exist_ok=True)
-    return data, ckpt
+        root = Path.home() / "NUIN/motionnet/data"
+        p = Paths(corpus=..., coeffs=root / "coeffs",
+                  movies=root / "coeffs", ckpt=root / "ckpt")
+    for d in (p.coeffs, p.movies, p.ckpt):
+        d.mkdir(parents=True, exist_ok=True)
+    return p
 
 REPO = Path(__file__).resolve().parents[2]     # src/motionnet/paths.py -> repo root
 CONFIGS = REPO / "configs"
