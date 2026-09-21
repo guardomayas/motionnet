@@ -43,7 +43,7 @@ def compose(exp_name=None, data=None, model=None, corpus=None, **overrides):
 
     cfg = load_cfg("model", model)
     cfg["stimulus"] = load_cfg("stimulus", data)
-    cfg["data"]["corpus"] = str(corpus)            # environment, not config
+    cfg["stimulus"]["corpus"] = str(corpus)            # environment, not config
     cfg["meta"] = dict(sweep=spec.get("name", "adhoc"),
                        data_id=data, model_id=model)
 
