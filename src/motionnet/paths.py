@@ -38,11 +38,11 @@ def load_cfg(kind, name):
 def compose(exp_name=None, data=None, model=None, corpus=None, **overrides):
     """Build one resolved config. Either name an experiment or a data+model pair."""
     spec = load_cfg("exp", exp_name) if exp_name else {}
-    data = data or spec["data"]
+    data = data or spec["stimulus"]
     model = model or spec["model"]
 
     cfg = load_cfg("model", model)
-    cfg["data"] = load_cfg("data", data)
+    cfg["stimulus"] = load_cfg("stimulus", data)
     cfg["data"]["corpus"] = str(corpus)            # environment, not config
     cfg["meta"] = dict(sweep=spec.get("name", "adhoc"),
                        data_id=data, model_id=model)

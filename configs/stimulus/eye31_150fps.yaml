@@ -1,0 +1,19 @@
+corpus: null                  # filled by the loader from paths.setup()
+split:
+  n_images: 100
+  val_frac: 0.2
+  stride: 1
+  seed: 0
+ds_seed_train: 1
+ds_seed_val: 99
+stimulus:
+  eye_size: 31
+  spacing_px: null
+  blur_px: 13
+  start_jitter: 40
+  contrast_range: null
+  noise_std: 0.0
+  frames_per_segment: 225
+  fps: 150
+  vel_std_deg_s: [120, 70]
+  samples_per_image: 6
