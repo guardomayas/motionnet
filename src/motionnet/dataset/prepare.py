@@ -27,8 +27,8 @@ def prepare_data(cfg, device, coeff_dir, movie_dir,
 
     Returns (train_mem, val_mem, info) where info carries fps / gray_frames / dpp.
     """
-    d = cfg["data"]
-    mcfg = d["stimulus"]
+    d = cfg["stimulus"]
+    mcfg = d["movie"]
     pre = PrefilterConfig(sigma_px=sigma_for(mcfg["blur_px"]))
     tag = f"blur{mcfg['blur_px']}_v{int(pre.sigma_px * 100)}"
 
