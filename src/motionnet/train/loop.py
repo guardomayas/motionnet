@@ -1,9 +1,5 @@
 # src/motionnet/train/loop.py
-"""Training loop extracted from notebooks/fit_CNN.ipynb (cells 12-13).
-
-Behaviour is intentionally identical to the notebook: same penalties, same
-renormalization after each step, same warmup ramp, same VALID slice. The only
-additions are (a) no module-level globals and (b) checkpoints get written.
+"""Training loop.
 """
 
 import json
@@ -58,7 +54,7 @@ def run_epoch(model, loader, cfg, v_std, valid, device,
     loss_fn = loss_fn or nn.MSELoss()
     L = cfg["loss"]
 
-    keys = ("total", "mse", "rate1", "rate2")
+    keys = ("total", "mse", "svar", "rate1", "rate2")
     sums = {k: torch.zeros((), device=device) for k in keys}
     err = torch.zeros(2, device=device)
     sq = torch.zeros(2, device=device)
@@ -71,8 +67,9 @@ def run_epoch(model, loader, cfg, v_std, valid, device,
         pred = model(movie)
         p, t = pred[:, valid], target[:, valid]
         mse = loss_fn(p, t)
-
-        total = mse
+        svar = model._local_v[:, valid].var(2, unbiased=False).mean()
+        
+        total = mse + L.get("lambda_var", 0.0) * svar
         if L["lambda_sp"]:
             total = total + L["lambda_sp"] * laplacian_penalty(
                 normed(model.spatial_kernel, (1, 2, 3)))
@@ -89,7 +86,7 @@ def run_epoch(model, loader, cfg, v_std, valid, device,
 
         B = movie.shape[0]
         n += B
-        for k, val in zip(keys, (total, mse, model._subunit_rate, model.layer2_rate)):
+        for k, val in zip(keys, (total, mse, svar, model._subunit_rate, model.layer2_rate)):
             sums[k] += val.detach() * B
         err += (p - t).detach().pow(2).sum((0, 1))
         sq += t.pow(2).sum((0, 1))

@@ -6,3 +6,4 @@ wandb/
 outputs/
 *.mp4
 *.gif
+ckpt/
