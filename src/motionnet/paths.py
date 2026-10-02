@@ -21,7 +21,7 @@ def setup(in_colab: bool) -> Paths:
         if not os.path.ismount("/content/drive"):
             raise RuntimeError("Drive not mounted")
         root = Path("/content/drive/MyDrive/NUIN/motionnet")
-        p = Paths(corpus=Path("/content/drive/MyDrive/NUIN/vanhateren"),       # whatever setup() does now
+        p = Paths(corpus=Path("/content/drive/MyDrive/NUIN/van_hateren"),       # whatever setup() does now
                   coeffs=root / "cache",                    # persistent: Drive
                   movies=Path("/content/movie_cache"),      # scratch: local disk
                   ckpt=root / "ckpt")
