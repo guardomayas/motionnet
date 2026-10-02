@@ -107,7 +107,7 @@ def fit(cfg, train_mem, val_mem, info, device, ckpt_dir,
     O, L = cfg["optim"], cfg["loss"]
     ckpt_dir = Path(ckpt_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    tag = tag or f"lam2{L['lambda_2']}_seed{O['seed']}"
+    tag = tag or f"lam2{L['lambda_2']}_lamv{L.get('lambda_var', 0.0)}_seed{O['seed']}"
 
     torch.manual_seed(O["seed"])
     np.random.seed(O["seed"])

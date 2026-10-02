@@ -22,6 +22,7 @@ loss:
   lambda_t: 0.0
   lambda_1: 0.0
   lambda_2: 0.04
+  lambda_var: 0.0     # 0 = pooled loss, 1 = per-location loss
   warmup_epochs: 50
 
 optim:

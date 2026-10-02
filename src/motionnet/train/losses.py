@@ -19,3 +19,12 @@ def laplacian_penalty(weight):
     w = weight.flatten(0, 1).unsqueeze(1)                 # (out*in, 1, k, k)
     lap = _LAPLACIAN.to(weight.device, weight.dtype)
     return F.conv2d(w, lap).pow(2).mean()
+
+def location_loss(local, target):
+    """local: (B, T, N, 2), target: (B, T, 2), both already sliced to valid frames.
+    Returns pooled prediction, pooled MSE, spatial variance.
+    pooled_mse + spatial_var == per-location MSE exactly."""
+    pooled = local.mean(2)
+    mse = (pooled - target).pow(2).mean()
+    svar = (local - pooled.unsqueeze(2)).pow(2).mean()
+    return pooled, mse, svar
