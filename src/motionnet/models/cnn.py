@@ -232,9 +232,11 @@ class MotionCNN(nn.Module):
         # -------------------------------------------------------
         # 4. Pooling over space + linear readout
         # -------------------------------------------------------
-        x_pool = x.mean(dim=(-1, -2))              # (B*T, N2)        
-        self._pool = x_pool.detach()
-        W = self.readout / self.readout.norm(dim=1, keepdim=True)             # unit rows
-        U = self.out_gain * x_pool @ W.T                                       # (B*T, 2)
-        return U.reshape(B, T, 2)
-    
+        # -------------------------------------------------------
+        # 4. Linear readout per location, then pool over space
+        # -------------------------------------------------------
+        self._pool = x.mean(dim=(-1, -2)).detach()                       # (B*T, N2), kept for diagnostics
+        W = self.readout / self.readout.norm(dim=1, keepdim=True)        # unit rows
+        local = self.out_gain * torch.einsum("bnhw,kn->bhwk", x, W)      # (B*T, H2, W2, 2)
+        self._local_v = local.reshape(B, T, H2 * W2, 2)                  # (B, T, N, 2)
+        return self._local_v.mean(2)   
