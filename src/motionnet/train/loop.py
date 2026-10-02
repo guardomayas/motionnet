@@ -177,10 +177,11 @@ def fit(cfg, train_mem, val_mem, info, device, ckpt_dir,
     return model, history, ckpt_path
 
 
-def load_checkpoint(path, info, device):
-    """Rebuild a model from a checkpoint. Returns (model, ckpt_dict)."""
-    ck = torch.load(path, map_location=device)
-    model = build_model(ck["cfg"], info, device)
+def load_checkpoint(path, device, info=None):
+    """Rebuild a model from a checkpoint. info is optional — fps is stored in the file."""
+    ck = torch.load(path, map_location=device, weights_only=False)
+    fps = info.fps if info is not None else ck["fps"]
+    model = MotionCNN(fps=fps, **ck["cfg"]["model"]).to(device)
     model.load_state_dict(ck["state_dict"])
     model.eval()
     return model, ck

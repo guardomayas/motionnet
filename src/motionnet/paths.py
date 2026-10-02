@@ -27,8 +27,10 @@ def setup(in_colab: bool) -> Paths:
                   ckpt=root / "ckpt")
     else:
         root = Path.home() / "NUIN/motionnet/data"
-        p = Paths(corpus=..., coeffs=root / "coeffs",
-                  movies=root / "coeffs", ckpt=root / "ckpt")
+        p = Paths(corpus=Path.home() / "NUIN/van_hateren/vanhateren_iml",
+              coeffs=root / "coeffs",
+              movies=root / "coeffs",
+              ckpt=root / "ckpt")
     for d in (p.coeffs, p.movies, p.ckpt):
         d.mkdir(parents=True, exist_ok=True)
     return p
