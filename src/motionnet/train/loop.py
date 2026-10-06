@@ -11,7 +11,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-
+from motionnet.dataset import batches
 from motionnet.models import MotionCNN
 from motionnet.train.losses import laplacian_penalty
 
@@ -97,7 +97,7 @@ def run_epoch(model, loader, cfg, v_std, valid, device,
     return out
 
 
-def fit(cfg, train_mem, val_mem, info, device, ckpt_dir,
+def fit(cfg, data, device, ckpt_dir,
         tag=None, log_every=20, progress=True):
     """Train one model. Returns (model, history, ckpt_path).
 
@@ -105,6 +105,7 @@ def fit(cfg, train_mem, val_mem, info, device, ckpt_dir,
     passed in rather than built here so a sweep pays the data cost once.
     """
     O, L = cfg["optim"], cfg["loss"]
+    info = data.info
     ckpt_dir = Path(ckpt_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     tag = tag or f"lam2{L['lambda_2']}_lamv{L.get('lambda_var', 0.0)}_seed{O['seed']}"
@@ -114,11 +115,13 @@ def fit(cfg, train_mem, val_mem, info, device, ckpt_dir,
 
     model = build_model(cfg, info, device)
     valid = slice(info.gray_frames + model.max_delay - 1, None)
-    v_std = compute_v_std(train_mem, valid, device)
+    v_std = compute_v_std(data.train, valid, device)
+    g = torch.Generator().manual_seed(O["seed"])
+
     print("Velocity std",v_std)
-    train_dl = DataLoader(train_mem, batch_size=O["batch_size"], shuffle=True,
-                          drop_last=True, num_workers=0)
-    val_dl = DataLoader(val_mem, batch_size=O["batch_size"], num_workers=0)
+    
+    # train_dl = batches(data.train, O["batch_size"], shuffle=True, drop_last=True, generator=g)
+    # val_dl = batches(data.val, O["batch_size"])
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=O["lr"],
                                   weight_decay=O["weight_decay"])
@@ -137,6 +140,8 @@ def fit(cfg, train_mem, val_mem, info, device, ckpt_dir,
 
     for epoch in epochs:
         ramp = min(1.0, epoch / L["warmup_epochs"])
+        train_dl = batches(data.train, O["batch_size"], shuffle=True, drop_last=True, generator=g)
+        val_dl = batches(data.val, O["batch_size"])
         tr = run_epoch(model, train_dl, cfg, v_std, valid, device, optimizer, ramp)
         with torch.no_grad():
             va = run_epoch(model, val_dl, cfg, v_std, valid, device, None, ramp)
