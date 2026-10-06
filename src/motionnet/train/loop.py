@@ -41,9 +41,9 @@ def build_model(cfg, info, device):
     return MotionCNN(fps=info.fps, **m).to(device)
 
 
-def compute_v_std(train_mem, valid, device):
+def compute_v_std(train, valid, device):
     """Per-component velocity std over the valid frames. Targets are divided by this."""
-    v = train_mem.tensors["vel_deg_s"][:, valid].reshape(-1, 2)
+    v = train["vel_deg_s"][:, valid].reshape(-1, 2)    
     return v.std(0).to(device)
 
 

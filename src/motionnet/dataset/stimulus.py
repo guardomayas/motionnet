@@ -4,7 +4,6 @@ Natural-motion stimuli: translating van Hateren crops on a fly receptor lattice.
     get_data(stim_cfg, cache_dir, device) -> Data         cache + device
     batches(split, batch_size, ...) -> Iterator[dict]     minibatches
 """
-
 import hashlib
 import json
 import math

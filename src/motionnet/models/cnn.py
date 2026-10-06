@@ -230,9 +230,6 @@ class MotionCNN(nn.Module):
         _, N2, H2, W2 = x.shape
         
         # -------------------------------------------------------
-        # 4. Pooling over space + linear readout
-        # -------------------------------------------------------
-        # -------------------------------------------------------
         # 4. Linear readout per location, then pool over space
         # -------------------------------------------------------
         self._pool = x.mean(dim=(-1, -2)).detach()                       # (B*T, N2), kept for diagnostics
