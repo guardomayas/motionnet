@@ -48,10 +48,10 @@ def compute_v_std(train, valid, device):
 
 
 def run_epoch(model, loader, cfg, v_std, valid, device,
-              optimizer=None, ramp=1.0, loss_fn=None):
+              optimizer=None, ramp=1.0):
     is_train = optimizer is not None
     model.train(is_train)
-    loss_fn = loss_fn or nn.MSELoss()
+    # loss_fn = loss_fn or nn.MSELoss()
     L = cfg["loss"]
 
     keys = ("total", "mse", "svar", "rate1", "rate2")
@@ -66,8 +66,10 @@ def run_epoch(model, loader, cfg, v_std, valid, device,
 
         pred = model(movie)
         p, t = pred[:, valid], target[:, valid]
-        mse = loss_fn(p, t)
-        svar = model._local_v[:, valid].var(2, unbiased=False).mean()
+        # mse = loss_fn(p, t)
+        mse  = (p - t).pow(2).sum(-1).mean() #to match vector notation
+        svar = model._local_v[:, valid].var(2, unbiased=False).sum(-1).mean()
+        # svar = model._local_v[:, valid].var(2, unbiased=False).mean()
         
         total = mse + L.get("lambda_var", 0.0) * svar
         if L["lambda_sp"]:

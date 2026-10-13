@@ -83,7 +83,8 @@ def normalize(img, log=True, zscore=True):
 
 def prefilter(img, sigma_px, log=True, zscore=True):
     """Raw image -> blurred B-spline coefficients, float32."""
-    img = normalize(np.asarray(img, np.float32), log, zscore)
+    img = np.asarray(img, np.float32)
     if sigma_px > 0:
         img = gaussian_filter(img, sigma_px, mode=BOUNDARY_MODE, truncate=BLUR_TRUNCATE)
+    img = normalize(img, log, zscore)      # log1p, then z-score    
     return spline_filter(img, order=SPLINE_ORDER, output=np.float32, mode=BOUNDARY_MODE)
