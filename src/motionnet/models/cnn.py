@@ -189,16 +189,11 @@ class MotionCNN(nn.Module):
 
         x = x.reshape(B, H1, W1, N1, T)
         x = x.permute(0, 4, 3, 1, 2)              # (B, T, N1, H1, W1)
-        self._z_energy = x.pow(2).mean()      # x = temporal conv output, pre-threshold
+      
         threshold = self.threshold[None, None, :, None, None]
         
-        gain = self.gain[
-            None,
-            None,
-            :,
-            None,
-            None,
-        ]
+        gain = self.gain[None, None,:, None, None]
+        self._z_energy = (gain * x).pow(2).mean()   # post-gain, pre-threshold, pre-noise 
         if self.nonlinearity == "relu":
             x = gain * F.relu(x - threshold)
         if self.nonlinearity == 'softplus': # can inclued recitified powers later!

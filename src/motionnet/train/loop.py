@@ -54,7 +54,7 @@ def run_epoch(model, loader, cfg, v_std, valid, device,
     # loss_fn = loss_fn or nn.MSELoss()
     L = cfg["loss"]
 
-    keys = ("total", "mse", "svar", "rate1", "rate2")
+    keys = ("total", "mse", "svar", "rate1", "rate2", "zE")
     sums = {k: torch.zeros((), device=device) for k in keys}
     err = torch.zeros(2, device=device)
     sq = torch.zeros(2, device=device)
@@ -89,7 +89,8 @@ def run_epoch(model, loader, cfg, v_std, valid, device,
 
         B = movie.shape[0]
         n += B
-        for k, val in zip(keys, (total, mse, svar, model._subunit_rate, model.layer2_rate)):
+        for k, val in zip(keys, (total, mse, svar, model._subunit_rate,
+                           model.layer2_rate, model._z_energy)):
             sums[k] += val.detach() * B
         err += (p - t).detach().pow(2).sum((0, 1))
         sq += t.pow(2).sum((0, 1))
@@ -154,16 +155,19 @@ def fit(cfg, data, device, ckpt_dir,
         sched.step()
         history["train"].append(tr)
         history["val"].append(va)
-        if epoch % 100 == 0:                                   # in case it crashes, save a temporary checkpoint every 100 epochs
+
+        # ---- NEW: periodic snapshot, survives a Colab disconnect ----
+        if epoch % 50 == 0:
             tmp = ckpt_dir / f"{tag}_last.tmp"
             torch.save({"cfg": cfg, "tag": tag, "epoch": epoch,
                         "state_dict": model.state_dict(),
                         "optimizer": optimizer.state_dict(),
                         "sched": sched.state_dict(),
                         "v_std": v_std.cpu(), "valid_start": valid.start,
-                        "fps": info.fps, "history": history}, tmp)
+                        "fps": info.fps, "max_delay": model.max_delay,
+                        "history": history}, tmp)
             tmp.replace(ckpt_dir / f"{tag}_last.pt")
-
+        # --------------------------------------------------------------
         if log_every and (epoch == 1 or epoch % log_every == 0 or epoch == O["epochs"]):
             msg = (f"{tag} {epoch:3d} | mse {tr['mse']:.3f}/{va['mse']:.3f} | "
                    f"R2 val x {va['r2_x']:.3f} y {va['r2_y']:.3f} | "
@@ -188,6 +192,8 @@ def fit(cfg, data, device, ckpt_dir,
         "wall_s": time.time() - t0,
     }, ckpt_path)
     (ckpt_dir / f"{tag}_cfg.json").write_text(json.dumps(cfg, indent=2, default=str))
+
+    (ckpt_dir / f"{tag}_last.pt").unlink(missing_ok=True)   # <-- NEW: snapshot no longer needed
 
     return model, history, ckpt_path
 
