@@ -189,7 +189,7 @@ class MotionCNN(nn.Module):
 
         x = x.reshape(B, H1, W1, N1, T)
         x = x.permute(0, 4, 3, 1, 2)              # (B, T, N1, H1, W1)
-
+        self._z_energy = x.pow(2).mean()      # x = temporal conv output, pre-threshold
         threshold = self.threshold[None, None, :, None, None]
         
         gain = self.gain[

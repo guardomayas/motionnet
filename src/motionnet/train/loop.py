@@ -76,7 +76,8 @@ def run_epoch(model, loader, cfg, v_std, valid, device,
             total = total + L["lambda_sp"] * laplacian_penalty(
                 normed(model.spatial_kernel, (1, 2, 3)))
         total = total + ramp * (L["lambda_1"] * model._subunit_rate
-                                + L["lambda_2"] * model.layer2_rate)
+                        + L["lambda_2"] * model.layer2_rate
+                        + L.get("lambda_z", 0.0) * model._z_energy)
 
         if is_train:
             optimizer.zero_grad()
@@ -153,6 +154,15 @@ def fit(cfg, data, device, ckpt_dir,
         sched.step()
         history["train"].append(tr)
         history["val"].append(va)
+        if epoch % 100 == 0:                                   # in case it crashes, save a temporary checkpoint every 100 epochs
+            tmp = ckpt_dir / f"{tag}_last.tmp"
+            torch.save({"cfg": cfg, "tag": tag, "epoch": epoch,
+                        "state_dict": model.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "sched": sched.state_dict(),
+                        "v_std": v_std.cpu(), "valid_start": valid.start,
+                        "fps": info.fps, "history": history}, tmp)
+            tmp.replace(ckpt_dir / f"{tag}_last.pt")
 
         if log_every and (epoch == 1 or epoch % log_every == 0 or epoch == O["epochs"]):
             msg = (f"{tag} {epoch:3d} | mse {tr['mse']:.3f}/{va['mse']:.3f} | "
