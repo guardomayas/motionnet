@@ -19,7 +19,7 @@ from tqdm.auto import tqdm
 from .vanhateren import (BLUR_TRUNCATE, BOUNDARY_MODE, SPLINE_ORDER, VH_SHAPE,
                          load_iml, prefilter, sigma_for, split_images)
 
-CACHE_VERSION = 1   # bump when make_movies' output changes for the same params
+CACHE_VERSION = 2   # bump when make_movies' output changes for the same params
 
 
 # ---------------------------------------------------------------------------
