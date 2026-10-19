@@ -96,6 +96,7 @@ def run_epoch(model, loader, cfg, v_std, valid, device,
     out = {k: (s / n).item() for k, s in sums.items()}
     r2 = (1 - err / sq).cpu().numpy()      # targets are zero-mean by construction
     out["r2_x"], out["r2_y"] = float(r2[0]), float(r2[1])
+    out["nmse"] = (err.sum() / sq.sum()).item()     # 1 = predict zero
     return out
 
 
