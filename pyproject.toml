@@ -15,7 +15,11 @@ cpu = ["torch>=2.4,<2.5", "torchvision", "imageio", "pooch"]
 tracking = ["hydra-core", "wandb"]
 
 [dependency-groups]
-dev = ["pytest", "ruff", "ipykernel>=7.3.0"]
+dev = [
+    "pytest",
+    "ruff",
+    "ipykernel>=7.3.0",
+]
 
 [build-system]
 requires = ["hatchling", "editables"]
