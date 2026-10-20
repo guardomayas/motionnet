@@ -7,27 +7,27 @@
 #   zflag: 0
 
 model:
-  rf_size_1: 5
+  rf_size_1: 7
   rf_size_2: 5
-  num_subunits_1: 10
+  num_subunits_1: 5
   num_subunits_2: 8
   out_gain: 1.0
   initial_threshold: 0.0
   initial_gain: 1.0
-  input_noise_std: 0.1414     # 0.10 * sqrt(fps/75)
-  layer_noise_std: 0.10
+  input_noise_std: 0.10
+  layer_noise_std: 0.10 # sets the units of λ_z (λ_z_eff = λ_z σ₁²); keep fixed
 
 loss:
-  lambda_sp: 0.0
-  lambda_t: 0.0
-  lambda_1: 0.0
-  lambda_2: 0.04
-  gamma_var: 0.0     # penalty on spatial variance of MSE estimator 0 = pooled loss, 1 = per-location loss
-  warmup_epochs: 50
+  gamma_var: 0.5          # middle of the swept range {0, 0.5, 1}
+  lambda_z: 0.15          # λ_z_eff = 0.0015; gain cost without collapsing the task
+  lambda_1: 0.0           # rate penalties off: λ_z replaces them, and both have the threshold loophole
+  lambda_2: 0.0
+  lambda_sp: 0.01         # removes the leftover init checkerboard; ~1% of the loss for smooth RFs
+  warmup_epochs: 12
 
 optim:
   seed: 1
-  epochs: 400
+  epochs: 150
   lr: 3.0e-3
   eta_min: 1.0e-4
   batch_size: 32
