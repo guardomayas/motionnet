@@ -1,0 +1,7 @@
+name: s02_constraints
+data: eye31_150fps          # stimulus: 400 van Hateren images, 31×31 eye, 150 fps
+model: base                 # everything not in the grid comes from base.yaml
+grid:
+  loss.gamma_var: [0.0, 0.5, 1.0]
+  model.num_subunits_1: [2, 4, 8]
+  optim.seed: [0, 1, 2]

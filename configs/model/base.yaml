@@ -26,7 +26,7 @@ loss:
   warmup_epochs: 12
 
 optim:
-  seed: 1
+  seed: 0
   epochs: 150
   lr: 3.0e-3
   eta_min: 1.0e-4
