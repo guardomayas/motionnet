@@ -1,10 +1,10 @@
-basis:
-  kind: raised_cosine
-  nbasis: 8
-  RFstart_s: 0.015
-  RFend_s: 0.130
-  b: 0.02
-  zflag: 0
+# basis:
+#   kind: raised_cosine
+#   nbasis: 8
+#   RFstart_s: 0.015
+#   RFend_s: 0.130
+#   b: 0.02
+#   zflag: 0
 
 model:
   rf_size_1: 5
