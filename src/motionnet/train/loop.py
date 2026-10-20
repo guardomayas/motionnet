@@ -13,27 +13,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from motionnet.dataset import batches
 from motionnet.models import MotionCNN
+from motionnet.models.cnn import unit
 from motionnet.train.losses import laplacian_penalty
-
-# dims must match what forward() normalizes over
-SCALE_FREE = {
-    "spatial_kernel": (1, 2, 3),    # per layer-1 channel
-    "temporal_w":     (1,),         # per row; phi = w @ B.T is normalized downstream
-    "layer2.weight":  (1, 2, 3),    # per layer-2 channel
-    "readout":        (1,),         # per output row
-}
-
-
-def normed(w, dims):
-    return w / (torch.linalg.vector_norm(w, dim=dims, keepdim=True) + 1e-8)
-
-
-@torch.no_grad()
-def renormalize(model):
-    params = dict(model.named_parameters())
-    for name, dims in SCALE_FREE.items():
-        p = params[name]
-        p.div_(torch.linalg.vector_norm(p, dim=dims, keepdim=True) + 1e-8)
 
 
 def build_model(cfg, info, device):
@@ -45,6 +26,16 @@ def compute_v_std(train, valid, device):
     """Per-component velocity std over the valid frames. Targets are divided by this."""
     v = train["vel_deg_s"][:, valid].reshape(-1, 2)    
     return v.std(0).to(device)
+
+
+def _ckpt(path, model, cfg, tag, v_std, valid, info, history, **extra):
+    """Atomic save: write .tmp then rename, so a killed run leaves no half file."""
+    tmp = path.with_suffix(".tmp")
+    torch.save(dict(cfg=cfg, tag=tag, state_dict=model.state_dict(),
+                    v_std=v_std.cpu(), valid_start=valid.start,
+                    gray_frames=info.gray_frames, fps=info.fps,
+                    max_delay=model.max_delay, history=history, **extra), tmp)
+    tmp.replace(path)
 
 
 def run_epoch(model, loader, cfg, v_std, valid, device,
@@ -74,7 +65,7 @@ def run_epoch(model, loader, cfg, v_std, valid, device,
         total = mse + L["gamma_var"] * svar
         if L["lambda_sp"]:
             total = total + L["lambda_sp"] * laplacian_penalty(
-                normed(model.spatial_kernel, (1, 2, 3)))
+                unit(model.spatial_kernel, (1, 2, 3)))
         total = total + ramp * (L["lambda_1"] * model._subunit_rate
                         + L["lambda_2"] * model.layer2_rate
                         + L.get("lambda_z", 0.0) * model._z_energy)
@@ -85,7 +76,6 @@ def run_epoch(model, loader, cfg, v_std, valid, device,
             torch.nn.utils.clip_grad_norm_(model.parameters(),
                                            max_norm=cfg["optim"]["grad_clip"])
             optimizer.step()
-            renormalize(model)
 
         B = movie.shape[0]
         n += B
@@ -134,6 +124,8 @@ def fit(cfg, data, device, ckpt_dir,
         optimizer, T_max=O["epochs"], eta_min=O["eta_min"])
 
     history = {"train": [], "val": [], "lr": []}
+    save = lambda path, **extra: _ckpt(path, model, cfg, tag, v_std, valid,
+                                       info, history, **extra)
     t0 = time.time()
     epochs = range(1, O["epochs"] + 1)
     if progress:
@@ -156,18 +148,9 @@ def fit(cfg, data, device, ckpt_dir,
         history["train"].append(tr)
         history["val"].append(va)
 
-        # ---- NEW: periodic snapshot, survives a Colab disconnect ----
-        if epoch % 50 == 0:
-            tmp = ckpt_dir / f"{tag}_last.tmp"
-            torch.save({"cfg": cfg, "tag": tag, "epoch": epoch,
-                        "state_dict": model.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        "sched": sched.state_dict(),
-                        "v_std": v_std.cpu(), "valid_start": valid.start,
-                        "fps": info.fps, "max_delay": model.max_delay,
-                        "history": history}, tmp)
-            tmp.replace(ckpt_dir / f"{tag}_last.pt")
-        # --------------------------------------------------------------
+        if epoch % 50 == 0:      # periodic snapshot, survives a Colab disconnect
+            save(ckpt_dir / f"{tag}_last.pt", epoch=epoch,
+                 optimizer=optimizer.state_dict(), sched=sched.state_dict())
         if log_every and (epoch == 1 or epoch % log_every == 0 or epoch == O["epochs"]):
             msg = (f"{tag} {epoch:3d} | mse {tr['mse']:.3f}/{va['mse']:.3f} | "
                    f"R2 val x {va['r2_x']:.3f} y {va['r2_y']:.3f} | "
@@ -179,18 +162,7 @@ def fit(cfg, data, device, ckpt_dir,
                 print(msg, flush=True)
 
     ckpt_path = ckpt_dir / f"{tag}.pt"
-    torch.save({
-        "cfg": cfg,
-        "tag": tag,
-        "state_dict": model.state_dict(),
-        "v_std": v_std.cpu(),
-        "valid_start": valid.start,
-        "gray_frames": info.gray_frames,
-        "fps": info.fps,
-        "max_delay": model.max_delay,
-        "history": history,
-        "wall_s": time.time() - t0,
-    }, ckpt_path)
+    save(ckpt_path, wall_s=time.time() - t0)
     (ckpt_dir / f"{tag}_cfg.json").write_text(json.dumps(cfg, indent=2, default=str))
 
     (ckpt_dir / f"{tag}_last.pt").unlink(missing_ok=True)   # <-- NEW: snapshot no longer needed

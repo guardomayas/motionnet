@@ -6,6 +6,9 @@ import torch
 import math
 
 
+def unit(w, dims):
+    """w scaled to unit L2 norm over dims. forward() sees only this, so raw norms are free."""
+    return w / (torch.linalg.vector_norm(w, dim=dims, keepdim=True) + 1e-8)
 
 
 class MotionCNN(nn.Module):
@@ -113,6 +116,10 @@ class MotionCNN(nn.Module):
 
         with torch.no_grad():
             self.layer2.weight -= self.layer2.weight.mean(dim=(2, 3), keepdim=True)
+            # Start raw norms at 1: Adam's step size relative to the weights depends on them
+            for w, dims in ((self.spatial_kernel, (1, 2, 3)), (self.temporal_w, (1,)),
+                            (self.layer2.weight, (1, 2, 3)), (self.readout, (1,))):
+                w.copy_(unit(w, dims))
             # ===========================================================
     # First-stage parameters
     # ===========================================================    
@@ -144,20 +151,7 @@ class MotionCNN(nn.Module):
         # 1. Spatial conv per frame
         # -------------------------------------------------------
         x = movie.reshape(B * T, C, H, W)
-        spatial_weight = self.spatial_kernel
-        spatial_norm = torch.linalg.vector_norm(
-                                spatial_weight,
-                                ord=2,
-                                dim=(1, 2, 3),
-                                keepdim=True,
-                            )
-        spatial_weight = spatial_weight / (spatial_norm + 1e-8)
-        x = F.conv2d(
-                x,
-                spatial_weight,
-                bias=None,
-                padding=0
-            )
+        x = F.conv2d(x, unit(self.spatial_kernel, (1, 2, 3)))
 
         _, N1, H1, W1 = x.shape
 
@@ -171,8 +165,7 @@ class MotionCNN(nn.Module):
 
         # causal temporal padding
         x = F.pad(x, (self.max_delay - 1, 0))
-        phi = self.temporal_w @ self.tbasis.T                                  # (N1, D)
-        phi = phi / (phi.norm(dim=1, keepdim=True) + 1e-8)
+        phi = unit(self.temporal_w @ self.tbasis.T, (1,))                     # (N1, D)
         temporal_weight = phi.flip(-1)[:, None, :]
         
         x = F.conv1d(
@@ -206,8 +199,7 @@ class MotionCNN(nn.Module):
         # -------------------------------------------------------
         x = x.reshape(B * T, N1, H1, W1)
         # DS should emerge here
-        K = self.layer2.weight
-        K = K / (torch.linalg.vector_norm(K, dim=(1, 2, 3), keepdim=True) + 1e-8)
+        K = unit(self.layer2.weight, (1, 2, 3))
         x = F.softplus(self.raw_gain2)[None, :, None, None] * F.relu(
                 F.conv2d(x, K) - self.threshold2[None, :, None, None])
         
@@ -224,7 +216,7 @@ class MotionCNN(nn.Module):
         # 4. Linear readout per location, then pool over space
         # -------------------------------------------------------
         self._pool = x.mean(dim=(-1, -2)).detach()                       # (B*T, N2), kept for diagnostics
-        W = self.readout / self.readout.norm(dim=1, keepdim=True)        # unit rows
+        W = unit(self.readout, (1,))                                     # unit rows
         local = self.out_gain * torch.einsum("bnhw,kn->bhwk", x, W)      # (B*T, H2, W2, 2)
         self._local_v = local.reshape(B, T, H2 * W2, 2)                  # (B, T, N, 2)
         return self._local_v.mean(2)   

@@ -3,6 +3,7 @@ from scipy.signal import convolve2d
 import matplotlib.pyplot as plt
 import torch.nn as nn
 import torch
+from motionnet.models.cnn import unit
 
 def temporal_kernels(cnn):
     """(N1, D) kernels in plot orientation: lag 0 LAST, matching t_ms."""
@@ -112,7 +113,7 @@ def plot_cnn_subunits_2(cnn: nn.Module):
     """
     Plot the second layer of subunits of a CNN.
     """
-    cnn_filters_2 = cnn.layer2.weight.to("cpu").detach()
+    cnn_filters_2 = unit(cnn.layer2.weight, (1, 2, 3)).to("cpu").detach()  # as forward() uses it
 
     fig, axs = plt.subplots(cnn.num_subunits_2,
                             cnn.num_subunits_1,
