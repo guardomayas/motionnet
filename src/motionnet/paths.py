@@ -45,7 +45,7 @@ def load_cfg(kind, name):
 def compose(exp_name=None, data=None, model=None, corpus=None, **overrides):
     """Build one resolved config. Either name an experiment or a data+model pair."""
     spec = load_cfg("exp", exp_name) if exp_name else {}
-    data = data or spec["stimulus"]
+    data = data or spec["data"]
     model = model or spec["model"]
 
     cfg = load_cfg("model", model)
@@ -54,7 +54,7 @@ def compose(exp_name=None, data=None, model=None, corpus=None, **overrides):
     cfg["meta"] = dict(sweep=spec.get("name", "adhoc"),
                        data_id=data, model_id=model)
 
-    for k, v in overrides.items():                 # "loss.lambda_2" -> 0.04
+    for k, v in {**spec.get("fixed", {}), **overrides}.items():      
         *path, last = k.split(".")
         dd = cfg
         for q in path:

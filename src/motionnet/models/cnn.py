@@ -60,7 +60,7 @@ class MotionCNN(nn.Module):
         print("rank:", B_orth.shape[1], "of", nbasis)
         print("condition number:", np.linalg.cond(B))# 16
 
-        self.register_buffer("tbasis", torch.as_tensor(B, dtype=torch.float32))
+        # self.register_buffer("tbasis", torch.as_tensor(B, dtype=torch.float32))
         self.max_delay = self.tbasis.shape[0]        # support comes from the basis
         self.register_buffer("tbasis", torch.tensor(B, dtype=torch.float32))   # (D, nb), lag 0 first
         self.temporal_w = nn.Parameter(0.1 * torch.randn(num_subunits_1, B.shape[1]))
@@ -129,12 +129,8 @@ class MotionCNN(nn.Module):
 
     
     def add_input_noise(self, movie):
-        if self.input_noise_std > 0:
+        if self.training and self.input_noise_std > 0:
             movie = movie + self.input_noise_std * torch.randn_like(movie)
-
-            # Optional if your movie is normalized to [0, 1]
-            # movie = movie.clamp(0.0, 1.0)
-
         return movie
 
 
@@ -201,7 +197,7 @@ class MotionCNN(nn.Module):
         
         self._subunit_rate = x.mean()            # stash for the penalty
         self._l1_std = x.detach().std(dim=(0, 1, 3, 4))    # per channel, before noise
-        if self.layer_noise_std > 0: 
+        if self.training and self.layer_noise_std > 0:
             x = x + self.layer_noise_std * torch.randn_like(x) 
     
 
@@ -217,7 +213,7 @@ class MotionCNN(nn.Module):
         
         self.layer2_rate = x.mean()
         
-        # if self.layer_noise_std > 0:#This is Avg out in current set up. For it to matter we need local readout
+        # if self.training and self.layer_noise_std > 0:#This is Avg out in current set up. For it to matter we need local readout
         #             x = x + self.layer_noise_std * torch.randn_like(x) 
         
         ## Add divisive normalization here or on layer 1 or both
