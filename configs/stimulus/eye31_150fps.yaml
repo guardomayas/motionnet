@@ -1,7 +1,7 @@
 # configs/stimulus/eye31_150fps.yaml
 corpus: null                  # filled by the loader from paths.setup()
 split:
-  n_images: 100
+  n_images: 400
   val_frac: 0.2
   stride: 1
   seed: 0
