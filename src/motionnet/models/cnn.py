@@ -60,9 +60,9 @@ class MotionCNN(nn.Module):
         print("rank:", B_orth.shape[1], "of", nbasis)
         print("condition number:", np.linalg.cond(B))# 16
 
-        # self.register_buffer("tbasis", torch.as_tensor(B, dtype=torch.float32))
+        self.register_buffer("tbasis", torch.as_tensor(B, dtype=torch.float32))
         self.max_delay = self.tbasis.shape[0]        # support comes from the basis
-        self.register_buffer("tbasis", torch.tensor(B, dtype=torch.float32))   # (D, nb), lag 0 first
+        # self.register_buffer("tbasis", torch.tensor(B, dtype=torch.float32))   # (D, nb), lag 0 first
         self.temporal_w = nn.Parameter(0.1 * torch.randn(num_subunits_1, B.shape[1]))
         
         # self.temporal_kernel = nn.Parameter(
