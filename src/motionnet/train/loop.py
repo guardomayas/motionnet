@@ -71,7 +71,7 @@ def run_epoch(model, loader, cfg, v_std, valid, device,
         svar = model._local_v[:, valid].var(2, unbiased=False).sum(-1).mean()
         # svar = model._local_v[:, valid].var(2, unbiased=False).mean()
         
-        total = mse + L.get("lambda_var", 0.0) * svar
+        total = mse + L["gamma_var"] * svar
         if L["lambda_sp"]:
             total = total + L["lambda_sp"] * laplacian_penalty(
                 normed(model.spatial_kernel, (1, 2, 3)))
@@ -113,7 +113,7 @@ def fit(cfg, data, device, ckpt_dir,
     info = data.info
     ckpt_dir = Path(ckpt_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    tag = tag or f"lam2{L['lambda_2']}_lamv{L.get('lambda_var', 0.0)}_seed{O['seed']}"
+    tag = tag or f"lam2{L['lambda_2']}_lamv{L.get('gamma_var', 0.0)}_seed{O['seed']}"
 
     torch.manual_seed(O["seed"])
     np.random.seed(O["seed"])

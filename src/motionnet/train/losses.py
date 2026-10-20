@@ -18,7 +18,7 @@ def laplacian_penalty(weight):
     """
     w = weight.flatten(0, 1).unsqueeze(1)                 # (out*in, 1, k, k)
     lap = _LAPLACIAN.to(weight.device, weight.dtype)
-    return F.conv2d(w, lap).pow(2).mean()
+    return F.conv2d(w, lap, padding=1).pow(2).mean()
 
 def location_loss(local, target):
     """local: (B, T, N, 2), target: (B, T, 2), both already sliced to valid frames.
