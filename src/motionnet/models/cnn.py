@@ -182,7 +182,11 @@ class MotionCNN(nn.Module):
         threshold = self.threshold[None, None, :, None, None]
         
         gain = self.gain[None, None,:, None, None]
-        self._z_energy = (gain * x).pow(2).mean()   # post-gain, pre-threshold, pre-noise 
+        gz2 = (gain * x).pow(2)
+        self._z_energy_c = gz2.detach().mean(dim=(0, 1, 3, 4))   # per-channel energy, for diagnostics
+        self._z_energy = gz2.mean(dim=(0, 1, 3, 4)).sum()        # total over channels: the penalty
+        
+        
         if self.nonlinearity == "relu":
             x = gain * F.relu(x - threshold)
         if self.nonlinearity == 'softplus': # can inclued recitified powers later!
