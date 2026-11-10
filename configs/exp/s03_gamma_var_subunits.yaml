@@ -1,4 +1,4 @@
-name: s02_constraints
+name: s03_gamma_var_subunits
 data: eye31_150fps          # stimulus: 400 van Hateren images, 31×31 eye, 150 fps
 model: base                 # everything not in the grid comes from base.yaml
 grid:
