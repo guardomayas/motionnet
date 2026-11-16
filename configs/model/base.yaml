@@ -1,11 +1,3 @@
-# basis:
-#   kind: raised_cosine
-#   nbasis: 8
-#   RFstart_s: 0.015
-#   RFend_s: 0.130
-#   b: 0.02
-#   zflag: 0
-
 model:
   rf_size_1: 7
   rf_size_2: 5
@@ -14,15 +6,18 @@ model:
   out_gain: 1.0
   initial_threshold: 0.0
   initial_gain: 1.0
-  input_noise_std: 0.10
-  layer_noise_std: 0.10 # sets the units of λ_z (λ_z_eff = λ_z σ₁²); keep fixed
+  nonlinearity: relu
+  # noise
+  noise_f_ref: 75.0        # Hz; input noise level is defined at this rate
+  input_noise_std: 0.10    # at noise_f_ref; model scales by sqrt(fps/f_ref) -> 0.141 at 150 Hz (20 dB)
+  layer_noise_std: 0.10    # layer 1, additive, per frame (not rate-scaled)
+  layer2_noise_std: 0.0    # layer 2, multiplicative, per frame; off in base, swept in experiments
 
 loss:
-  gamma_var: 0.5          # middle of the swept range {0, 0.5, 1}
-  lambda_z: 0.0          # λ_z_eff = 0.0015; gain cost without collapsing the task
-  lambda_1: 0.0           # rate penalties off: λ_z replaces them, and both have the threshold loophole
-  lambda_2: 0.0
-  lambda_sp: 0.01         # removes the leftover init checkerboard; ~1% of the loss for smooth RFs
+  gamma_var: 0.5
+  lambda_r1: 0.0           # L1 rate after the nonlinearity, layer 1 (Karklin–Simoncelli)
+  lambda_r2: 0.0           # same, layer 2
+  lambda_sp: 0.01
   warmup_epochs: 12
 
 optim:
