@@ -54,10 +54,14 @@ def compose(exp_name=None, data=None, model=None, corpus=None, **overrides):
     cfg["meta"] = dict(sweep=spec.get("name", "adhoc"),
                        data_id=data, model_id=model)
 
-    for k, v in {**spec.get("fixed", {}), **overrides}.items():      
+    for k, v in {**spec.get("fixed", {}), **overrides}.items():
         *path, last = k.split(".")
         dd = cfg
         for q in path:
+            if q not in dd:
+                raise KeyError(f"override {k!r}: no section {q!r} in config")
             dd = dd[q]
+        if last not in dd:
+            raise KeyError(f"override {k!r}: no such key in config")
         dd[last] = v
     return cfg, spec.get("grid", {})
