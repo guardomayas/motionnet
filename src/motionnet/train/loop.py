@@ -78,7 +78,7 @@ def run_epoch(model, loader, cfg, v_std, valid, device,
         B = movie.shape[0]
         n += B
         for k, val in zip(keys, (total, mse, svar, model._rate1,
-                           model._rate2, model._z_energy)):
+                           model._rate2, model._energy1)):
             sums[k] += val.detach() * B
         err += (p - t).detach().pow(2).sum((0, 1))
         sq += t.pow(2).sum((0, 1))
@@ -101,7 +101,8 @@ def fit(cfg, data, device, ckpt_dir,
     info = data.info
     ckpt_dir = Path(ckpt_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    tag = tag or f"lam2{L['lambda_2']}_lamv{L.get('gamma_var', 0.0)}_seed{O['seed']}"
+    tag = tag or (f"r1-{L.get('lambda_r1', 0.0)}_r2-{L.get('lambda_r2', 0.0)}"
+              f"_gv-{L.get('gamma_var', 0.0)}_seed-{O['seed']}")
 
     torch.manual_seed(O["seed"])
     np.random.seed(O["seed"])

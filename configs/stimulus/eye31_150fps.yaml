@@ -10,7 +10,7 @@ ds_seed_val: 99
 movie:
   eye_size: 31
   spacing_px: null
-  blur_px: 13
+  phi_px: 13
   start_jitter: 40
   contrast_range: null
   noise_std: 0.0
