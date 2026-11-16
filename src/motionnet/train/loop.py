@@ -66,9 +66,7 @@ def run_epoch(model, loader, cfg, v_std, valid, device,
         if L["lambda_sp"]:
             total = total + L["lambda_sp"] * laplacian_penalty(
                 unit(model.spatial_kernel, (1, 2, 3)))
-        total = total + ramp * (L["lambda_1"] * model._subunit_rate
-                        + L["lambda_2"] * model.layer2_rate
-                        + L.get("lambda_z", 0.0) * model._z_energy)
+        total = total + ramp * (L["lambda_r1"] * model._rate1 + L["lambda_r2"] * model._rate2)
 
         if is_train:
             optimizer.zero_grad()
@@ -79,8 +77,8 @@ def run_epoch(model, loader, cfg, v_std, valid, device,
 
         B = movie.shape[0]
         n += B
-        for k, val in zip(keys, (total, mse, svar, model._subunit_rate,
-                           model.layer2_rate, model._z_energy)):
+        for k, val in zip(keys, (total, mse, svar, model._rate1,
+                           model._rate2, model._z_energy)):
             sums[k] += val.detach() * B
         err += (p - t).detach().pow(2).sum((0, 1))
         sq += t.pow(2).sum((0, 1))

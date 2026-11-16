@@ -30,7 +30,7 @@ class MovieParams:
     """Everything that determines a movie. Unknown YAML keys raise TypeError.
 
     Angular scale is declared, not measured: one interommatidial angle
-    (delta_phi_deg) spans `blur_px` source px (Flyvis convention).
+    (delta_phi_deg) spans `phi_px` source px (Flyvis convention).
     Velocity column 0 is x (image columns), column 1 is y (rows).
 
     bounds_mode:
@@ -40,10 +40,10 @@ class MovieParams:
     """
     # eye geometry
     eye_size: int = 28
-    blur_px: float = 13.0              # acceptance FWHM in source px; fixes Δρ
-    spacing_px: float | None = None    # receptor lattice; None -> blur_px
+    phi_px: float = 13.0              # acceptance FWHM in source px; fixes Δρ
+    spacing_px: float | None = None    # receptor lattice; None -> phi_px
     delta_phi_deg: float = 5.3
-    rho_phi_ratio: float = 1.08
+    rho_phi_ratio: float = 1.00
     log_image: bool = True
     zscore: bool = True
     # timing
@@ -82,13 +82,13 @@ class MovieParams:
 
     # --- derived quantities ---
     @property
-    def spacing(self):      return float(self.blur_px if self.spacing_px is None else self.spacing_px)
+    def spacing(self):      return float(self.phi_px if self.spacing_px is None else self.spacing_px)
     @property
-    def dpp(self):          return self.delta_phi_deg / self.blur_px      # deg per source px
+    def dpp(self):          return self.delta_phi_deg / self.phi_px      # deg per source px
     @property
     def deg_per_tap(self):  return self.dpp * self.spacing
     @property
-    def sigma_px(self):     return sigma_for(self.blur_px, self.rho_phi_ratio)
+    def sigma_px(self):     return sigma_for(self.phi_px, self.rho_phi_ratio)
     @property
     def T(self):            return int(self.frames_per_segment)
     @property

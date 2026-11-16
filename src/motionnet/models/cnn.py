@@ -12,107 +12,104 @@ def unit(w, dims):
 
 
 class MotionCNN(nn.Module):
-    def __init__(self,
-                 fps =              None, 
-                 rf_size_1=         None,
-                 rf_size_2=         None,
-                 num_subunits_1=    None,
-                 num_subunits_2=    None,
-                 out_gain=          None,
-                 initial_threshold= None,
-                 initial_gain=      None,
-                 input_noise_std =  None,
-                 layer_noise_std =  None
-                 ):
+    """Two-layer motion CNN.
 
+    Layer 1: separable space x time filters, gain g_c, threshold theta_c, ReLU,
+             additive output noise (per frame).
+    Layer 2: spatial conv across layer-1 channels, frame by frame, gain h_m,
+             threshold theta2_m, ReLU, multiplicative output noise (per frame).
+    Readout: fixed-scale linear map per location, then spatial mean.
+
+    Activity costs (Karklin & Simoncelli convention): L1 rate after the
+    nonlinearity, summed over channels, averaged over batch/time/space,
+    taken before noise. Exposed as self._rate1, self._rate2.
+    """
+
+    def __init__(self,
+                 fps=None,
+                 rf_size_1=None,
+                 rf_size_2=None,
+                 num_subunits_1=None,
+                 num_subunits_2=None,
+                 out_gain=None,
+                 initial_threshold=None,
+                 initial_gain=None,
+                 input_noise_std=None,
+                 layer_noise_std=None,
+                 layer2_noise_std=0.0,
+                 noise_f_ref=75.0,
+                 nonlinearity="relu",
+                 ):
         super().__init__()
 
         self.rf_size_1 = rf_size_1
         self.rf_size_2 = rf_size_2
-        
         self.num_subunits_1 = num_subunits_1
         self.num_subunits_2 = num_subunits_2
-        
-        # self.mean_function = mean_function
-        self.nonlinearity  = 'relu'
+        self.nonlinearity = nonlinearity
 
-        # Noise / regularization
-        self.input_noise_std = input_noise_std
-        self.layer_noise_std = layer_noise_std     # additive, FIXED scale
+        # -------------------------------------------------------
+        # Noise
+        # -------------------------------------------------------
+        # Input noise is defined at noise_f_ref and scaled by sqrt(fps / f_ref):
+        # phi_c integrates over a fixed time, so this keeps the filtered SNR
+        # independent of frame rate.
+        self.input_noise_std = input_noise_std * math.sqrt(fps / noise_f_ref)
+        # Layer noises are per frame: nothing downstream integrates over time.
+        self.layer_noise_std = layer_noise_std      # additive, layer 1
+        self.layer2_noise_std = layer2_noise_std    # multiplicative, layer 2
 
-        ## First Layer
+        # =======================================================
+        # Layer 1: separable spatio-temporal subunits
+        # =======================================================
         self.spatial_kernel = nn.Parameter(
-                            torch.randn(
-                                num_subunits_1,
-                                1,
-                                rf_size_1,
-                                rf_size_1,
-                            )
-                        )
-        dt = 1 / fps                      # not a hardcoded 1/60
-        nbasis = 8 #;     %number of stimulus basis functions
+            torch.randn(num_subunits_1, 1, rf_size_1, rf_size_1)
+        )
 
-        RFstart = 15e-3 #;%0?
-        RFend   = 130e-3#;%150e-3 or 180e-3;
+        dt = 1 / fps
+        nbasis = 8
+        RFstart = 15e-3
+        RFend = 130e-3
         b = 0.02
 
         t, B_orth, B = makeRaisedCosBasis(nbasis, dt, [RFstart, RFend], b, zflag=0)
         D = B.shape[0]
-        
         print(f"support: {D} frames = {t[-1]*1e3:.0f} ms")
         print("rank:", B_orth.shape[1], "of", nbasis)
-        print("condition number:", np.linalg.cond(B))# 16
+        print("condition number:", np.linalg.cond(B))
 
-        self.register_buffer("tbasis", torch.as_tensor(B, dtype=torch.float32))
-        self.max_delay = self.tbasis.shape[0]        # support comes from the basis
-        # self.register_buffer("tbasis", torch.tensor(B, dtype=torch.float32))   # (D, nb), lag 0 first
+        self.register_buffer("tbasis", torch.as_tensor(B, dtype=torch.float32))  # (D, nb), lag 0 first
+        self.max_delay = self.tbasis.shape[0]
         self.temporal_w = nn.Parameter(0.1 * torch.randn(num_subunits_1, B.shape[1]))
-        
-        # self.temporal_kernel = nn.Parameter(
-        #                     torch.randn(
-        #                         num_subunits_1,
-        #                         1,
-        #                         max_delay,
-        #                     )
-        #                 )
+
         self.threshold = nn.Parameter(
-            torch.full(
-                (num_subunits_1,),
-                float(initial_threshold),
-            )
+            torch.full((num_subunits_1,), float(initial_threshold))
         )
-        self.threshold2 = nn.Parameter(
-                    torch.full(
-                        (num_subunits_2,),
-                        float(initial_threshold),
-                    )
-                )
-        self.readout    = nn.Parameter(0.1 * torch.randn(2, num_subunits_2))   # rows: v_x, v_y
-        self.out_gain   = out_gain                                             # fixed float, NOT a Parameter
-        #
-        initial_gain = torch.tensor(float(initial_gain))
-
-        raw_initial_gain = torch.log(
-            torch.expm1(initial_gain)
-        )
-
-        self.raw_gain = nn.Parameter(
-            raw_initial_gain.repeat(num_subunits_1)
-        )
+        raw_initial_gain = torch.log(torch.expm1(torch.tensor(float(initial_gain))))
+        self.raw_gain = nn.Parameter(raw_initial_gain.repeat(num_subunits_1))
 
         # =======================================================
-        # Second nonlinear spatial layer
+        # Layer 2: rectified spatial pooling across channels
         # =======================================================
-        
         self.layer2 = nn.Conv2d(
             in_channels=num_subunits_1,
             out_channels=num_subunits_2,
             kernel_size=rf_size_2,
-            padding=0, #check best convolution operation
-            bias=False, #Should we?
+            padding=0,
+            bias=False,          # the threshold plays this role
         )
-        self.raw_gain2 = nn.Parameter(torch.full((num_subunits_2,), math.log(math.e - 1)))  # softplus -> 1
+        self.threshold2 = nn.Parameter(
+            torch.full((num_subunits_2,), float(initial_threshold))
+        )
+        self.raw_gain2 = nn.Parameter(
+            torch.full((num_subunits_2,), math.log(math.e - 1))   # softplus -> 1
+        )
 
+        # =======================================================
+        # Readout
+        # =======================================================
+        self.readout = nn.Parameter(0.1 * torch.randn(2, num_subunits_2))   # rows: v_x, v_y
+        self.out_gain = out_gain                                            # fixed float, NOT a Parameter
 
         with torch.no_grad():
             self.layer2.weight -= self.layer2.weight.mean(dim=(2, 3), keepdim=True)
@@ -120,107 +117,89 @@ class MotionCNN(nn.Module):
             for w, dims in ((self.spatial_kernel, (1, 2, 3)), (self.temporal_w, (1,)),
                             (self.layer2.weight, (1, 2, 3)), (self.readout, (1,))):
                 w.copy_(unit(w, dims))
-            # ===========================================================
-    # First-stage parameters
-    # ===========================================================    
-    
+
+    # -----------------------------------------------------------
+    # Parameters in constrained form
+    # -----------------------------------------------------------
     @property
     def gain(self):
-        """
-        Positive response gain for each first-layer channel.
-
-        Shape:
-            (num_subunits_1,)
-        """
+        """Layer-1 gains g_c > 0, shape (num_subunits_1,)."""
         return F.softplus(self.raw_gain)
 
-    
+    @property
+    def gain2(self):
+        """Layer-2 gains h_m > 0, shape (num_subunits_2,)."""
+        return F.softplus(self.raw_gain2)
+
+    def _nl(self, x):
+        if self.nonlinearity == "relu":
+            return F.relu(x)
+        if self.nonlinearity == "softplus":
+            return F.softplus(x)
+        raise ValueError(f"unknown nonlinearity {self.nonlinearity!r}")
+
     def add_input_noise(self, movie):
-        if self.training and self.input_noise_std > 0:
+        if self.input_noise_std > 0:
             movie = movie + self.input_noise_std * torch.randn_like(movie)
         return movie
 
-
+    # -----------------------------------------------------------
+    # Forward
+    # -----------------------------------------------------------
     def forward(self, movie):
-    
         movie = self.add_input_noise(movie)
-
         B, T, C, H, W = movie.shape
 
-        # -------------------------------------------------------
         # 1. Spatial conv per frame
-        # -------------------------------------------------------
         x = movie.reshape(B * T, C, H, W)
         x = F.conv2d(x, unit(self.spatial_kernel, (1, 2, 3)))
-
         _, N1, H1, W1 = x.shape
-
         x = x.reshape(B, T, N1, H1, W1)
 
-        # -------------------------------------------------------
-        # 2. Temporal conv at each spatial location
-        # -------------------------------------------------------
-        x = x.permute(0, 3, 4, 2, 1)              # (B, H1, W1, N1, T)
-        x = x.reshape(B * H1 * W1, N1, T)         # (B*H1*W1, N1, T)
-
-        # causal temporal padding
+        # 2. Causal temporal conv at each spatial location
+        x = x.permute(0, 3, 4, 2, 1).reshape(B * H1 * W1, N1, T)
         x = F.pad(x, (self.max_delay - 1, 0))
-        phi = unit(self.temporal_w @ self.tbasis.T, (1,))                     # (N1, D)
-        temporal_weight = phi.flip(-1)[:, None, :]
-        
-        x = F.conv1d(
-            x,
-            temporal_weight,
-            bias=None,
-            padding=0,
-            groups=self.num_subunits_1,
-        )
+        phi = unit(self.temporal_w @ self.tbasis.T, (1,))          # (N1, D)
+        x = F.conv1d(x, phi.flip(-1)[:, None, :], groups=N1)
+        x = x.reshape(B, H1, W1, N1, T).permute(0, 4, 3, 1, 2)     # (B, T, N1, H1, W1)
 
-        x = x.reshape(B, H1, W1, N1, T)
-        x = x.permute(0, 4, 3, 1, 2)              # (B, T, N1, H1, W1)
-      
-        threshold = self.threshold[None, None, :, None, None]
-        
-        gain = self.gain[None, None,:, None, None]
-        gz2 = (gain * x).pow(2)
-        self._z_energy_c = gz2.detach().mean(dim=(0, 1, 3, 4))   # per-channel energy, for diagnostics
-        self._z_energy = gz2.mean(dim=(0, 1, 3, 4)).sum()        # total over channels: the penalty
-        
-        
-        if self.nonlinearity == "relu":
-            x = gain * F.relu(x - threshold)
-        if self.nonlinearity == 'softplus': # can inclued recitified powers later!
-            x = gain * F.softplus(x- threshold)
-        
-        self._subunit_rate = x.mean()            # stash for the penalty
-        self._l1_std = x.detach().std(dim=(0, 1, 3, 4))    # per channel, before noise
-        if self.training and self.layer_noise_std > 0:
-            x = x + self.layer_noise_std * torch.randn_like(x) 
-    
+        # Layer-1 nonlinearity
+        z = x                                                      # pre-threshold drive
+        g = self.gain[None, None, :, None, None]
+        th = self.threshold[None, None, :, None, None]
+        x = g * self._nl(z - th)
 
-        # -------------------------------------------------------
-        # 3. Second spatial conv
-        # -------------------------------------------------------
+        self._rate1 = x.mean(dim=(0, 1, 3, 4)).sum()               # L1 rate cost, before noise
+        with torch.no_grad():                                      # diagnostics
+            self._energy1_c = (g * z).pow(2).mean(dim=(0, 1, 3, 4))
+            self._energy1 = self._energy1_c.sum()
+            self._l1_std = x.std(dim=(0, 1, 3, 4))
+            self._active1 = (x > 0).float().mean(dim=(0, 1, 3, 4))
+
+        if self.layer_noise_std > 0:
+            x = x + self.layer_noise_std * torch.randn_like(x)     # additive
+
+        # 3. Layer 2: spatial conv across channels, frame by frame
         x = x.reshape(B * T, N1, H1, W1)
-        # DS should emerge here
         K = unit(self.layer2.weight, (1, 2, 3))
-        x = F.softplus(self.raw_gain2)[None, :, None, None] * F.relu(
-                F.conv2d(x, K) - self.threshold2[None, :, None, None])
-        
-        self.layer2_rate = x.mean()
-        
-        # if self.training and self.layer_noise_std > 0:#This is Avg out in current set up. For it to matter we need local readout
-        #             x = x + self.layer_noise_std * torch.randn_like(x) 
-        
-        ## Add divisive normalization here or on layer 1 or both
-        #TODO:
+        h = self.gain2[None, :, None, None]
+        s = F.conv2d(x, K) - self.threshold2[None, :, None, None]
+        x = h * self._nl(s)
+
+        self._rate2 = x.mean(dim=(0, 2, 3)).sum()                  # L1 rate cost, before noise
+        with torch.no_grad():
+            self._active2 = (x > 0).float().mean(dim=(0, 2, 3))    
+
+        if self.layer2_noise_std > 0:
+            # multiplicative: adds ~ sum_m (R_xm^2 + R_ym^2) <y_m^2> to the loss,
+            # i.e. an L2 cost on activity weighted by the readout
+            x = x * (1 + self.layer2_noise_std * torch.randn_like(x))
+
         _, N2, H2, W2 = x.shape
-        
-        # -------------------------------------------------------
+
         # 4. Linear readout per location, then pool over space
-        # -------------------------------------------------------
-        self._pool = x.mean(dim=(-1, -2)).detach()                       # (B*T, N2), kept for diagnostics
-        W = unit(self.readout, (1,))                                     # unit rows
-        local = self.out_gain * torch.einsum("bnhw,kn->bhwk", x, W)      # (B*T, H2, W2, 2)
-        self._local_v = local.reshape(B, T, H2 * W2, 2)                  # (B, T, N, 2)
-        return self._local_v.mean(2)   
+        self._pool = x.mean(dim=(-1, -2)).detach()                 # (B*T, N2), diagnostics
+        R = unit(self.readout, (1,))                               # unit rows
+        local = self.out_gain * torch.einsum("bnhw,kn->bhwk", x, R)
+        self._local_v = local.reshape(B, T, H2 * W2, 2)            # (B, T, N, 2)
+        return self._local_v.mean(2)
