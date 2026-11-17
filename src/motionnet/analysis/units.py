@@ -294,6 +294,9 @@ def threshold_mechanism(folder, data, device, thresh_v=0.5, max_batches=None):
             pref = sgn * d["tgt"][:, ax] > thresh_v
             null = -sgn * d["tgt"][:, ax] > thresh_v
             drive_sd = float(np.sqrt(d["drive_sq"][:, m].mean()))
+            mu = float(d["drive_mean"][:, m].mean())
+            sd = float(np.sqrt(d["drive_sq"][:, m].mean() - mu**2))
+            
             rows.append({
                 "tag": ck["tag"],
                 "loss.lambda_r2": ck["cfg"]["loss"]["lambda_r2"],
@@ -306,6 +309,9 @@ def threshold_mechanism(folder, data, device, thresh_v=0.5, max_batches=None):
                 "theta": float(th[m]),
                 "theta_rel": float(th[m] / (drive_sd + 1e-12)),
                 "gain2": float(model.gain2[m].item()),
+                "drive_mean_rel": mu / sd,                 # where the drive sits relative to 0
+                "z_eff": (th[m] - mu) / sd,                # effective threshold, in s.d. above the drive mean
+                "net_K": float(unit(model.layer2.weight, (1, 2, 3))[m].sum().item()),   # kernel DC
             })
     return pd.DataFrame(rows)
 

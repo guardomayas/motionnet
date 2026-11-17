@@ -199,6 +199,7 @@ class MotionCNN(nn.Module):
             self._rate2_c = x.mean(dim=(0, 2, 3))                  # per-unit <y>
             self._y2sq_c = x.pow(2).mean(dim=(0, 2, 3))            # per-unit <y^2>    
             self._drive_sq = drive.pow(2).mean(dim=(-1, -2))       # (B*T, C2): linear drive energy per frame
+            self._drive_mean = drive.mean(dim=(-1, -2))            # (B*T, C2)
             self._drive_rect = F.relu(drive).mean(dim=(-1, -2))    # (B*T, C2): drive rectified at 0
 
         if self.layer2_noise_std > 0:
