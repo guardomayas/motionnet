@@ -189,7 +189,8 @@ class MotionCNN(nn.Module):
         x = x.reshape(B * T, N1, H1, W1)
         K = unit(self.layer2.weight, (1, 2, 3))
         h = self.gain2[None, :, None, None]
-        s = F.conv2d(x, K) - self.threshold2[None, :, None, None]
+        drive = F.conv2d(x, K)                                     # pre-threshold drive
+        s = drive - self.threshold2[None, :, None, None]
         x = h * self._nl(s)
 
         self._rate2 = x.mean(dim=(0, 2, 3)).sum()                  # L1 rate cost, before noise
@@ -197,6 +198,8 @@ class MotionCNN(nn.Module):
             self._active2 = (x > 0).float().mean(dim=(0, 2, 3))
             self._rate2_c = x.mean(dim=(0, 2, 3))                  # per-unit <y>
             self._y2sq_c = x.pow(2).mean(dim=(0, 2, 3))            # per-unit <y^2>    
+            self._drive_sq = drive.pow(2).mean(dim=(-1, -2))       # (B*T, C2): linear drive energy per frame
+            self._drive_rect = F.relu(drive).mean(dim=(-1, -2))    # (B*T, C2): drive rectified at 0
 
         if self.layer2_noise_std > 0:
             # multiplicative: adds ~ sum_m (R_xm^2 + R_ym^2) <y_m^2> to the loss,

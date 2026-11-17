@@ -226,3 +226,111 @@ def plot_vs(runs, xcol, panels=DEFAULT_PANELS, ncols=4):
         a.axis("off")
     fig.tight_layout()
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Mechanism: where does direction selectivity come from, filter or threshold?
+# ---------------------------------------------------------------------------
+@torch.no_grad()
+def collect_drive(model, ck, data, device, max_batches=None):
+    """Per-frame (valid frames), per-unit: output y, linear drive energy, drive rectified at 0."""
+    valid = slice(ck["valid_start"], None)
+    v_std = ck["v_std"].to(device)
+    model.eval()
+    out = {k: [] for k in ("y", "drive_sq", "drive_rect", "tgt")}
+    sd = []
+    for i, b in enumerate(batches(data.val, 32)):
+        if max_batches and i >= max_batches:
+            break
+        mv = b["movie"].to(device)
+        B = mv.shape[0]
+        model(mv)
+        C2 = model._pool.shape[-1]
+        f = lambda a: a.reshape(B, -1, C2)[:, valid].reshape(-1, C2).cpu()
+        out["y"].append(f(model._pool))
+        out["drive_sq"].append(f(model._drive_sq))
+        out["drive_rect"].append(f(model._drive_rect))
+        out["tgt"].append((b["vel_deg_s"].to(device)[:, valid] / v_std).reshape(-1, 2).cpu())
+    return {k: torch.cat(v).numpy() for k, v in out.items()}
+
+
+def _dsi(r, pref, null):
+    a, b = r[pref].mean(), r[null].mean()
+    return float((a - b) / (abs(a) + abs(b) + 1e-12))
+
+
+def threshold_mechanism(folder, data, device, thresh_v=0.5, max_batches=None):
+    """One row per (checkpoint, used layer-2 unit).
+
+    dsi_linear : DSI of the linear drive's energy  <drive^2>   -> what the filter alone gives
+    dsi_rect0  : DSI of the drive rectified at 0   <[drive]+>  -> filter + ReLU, no learned threshold
+    dsi_output : DSI of the actual output          <h[drive - theta]+>
+    theta_rel  : threshold in units of the drive's s.d.  (raw theta is meaningless if the drive scale changes)
+
+    Threshold mechanism predicts: dsi_linear ~ dsi_rect0 low and flat across lambda,
+    dsi_output rising with lambda, together with theta_rel.
+    """
+    rows = []
+    for f in sorted(Path(folder).glob("*.pt")):
+        if f.stem.endswith("_last"):
+            continue
+        model, ck = load_checkpoint(f, device, data.info)
+        if not hasattr(model, "_drive_sq"):
+            model(next(iter(batches(data.val, 2)))["movie"].to(device))
+            if not hasattr(model, "_drive_sq"):
+                raise AttributeError("cnn.py is missing the _drive_sq/_drive_rect diagnostics")
+        d = collect_drive(model, ck, data, device, max_batches)
+        R = unit(model.readout, (1,)).detach().cpu().numpy()
+        th = model.threshold2.detach().cpu().numpy()
+        X = np.c_[d["tgt"], np.ones(len(d["tgt"]))]
+        for m in range(d["y"].shape[1]):
+            y = d["y"][:, m]
+            w = float((R[:, m] ** 2).sum())
+            if w < 0.05 or (y > 0).mean() < 0.01:
+                continue                                                 # unused unit
+            beta = np.linalg.lstsq(X, y, rcond=None)[0][:2]
+            ax = int(abs(beta[1]) > abs(beta[0]))
+            sgn = np.sign(beta[ax])
+            pref = sgn * d["tgt"][:, ax] > thresh_v
+            null = -sgn * d["tgt"][:, ax] > thresh_v
+            drive_sd = float(np.sqrt(d["drive_sq"][:, m].mean()))
+            rows.append({
+                "tag": ck["tag"],
+                "loss.lambda_r2": ck["cfg"]["loss"]["lambda_r2"],
+                "loss.lambda_r1": ck["cfg"]["loss"]["lambda_r1"],
+                "optim.seed": ck["cfg"]["optim"]["seed"],
+                "unit": m + 1,
+                "dsi_linear": _dsi(d["drive_sq"][:, m], pref, null),
+                "dsi_rect0": _dsi(d["drive_rect"][:, m], pref, null),
+                "dsi_output": _dsi(y, pref, null),
+                "theta": float(th[m]),
+                "theta_rel": float(th[m] / (drive_sd + 1e-12)),
+                "gain2": float(model.gain2[m].item()),
+            })
+    return pd.DataFrame(rows)
+
+
+def plot_mechanism(mech, xcol="loss.lambda_r2"):
+    """Left: three DSIs vs lambda (per-run mean over used units). Right: relative threshold."""
+    import matplotlib.pyplot as plt
+    per_run = mech.groupby(["tag", xcol]).mean(numeric_only=True).reset_index()
+    xs = sorted(per_run[xcol].unique())
+    pos = {x: i for i, x in enumerate(xs)}
+    fig, (a, b) = plt.subplots(1, 2, figsize=(10, 3.6))
+    for col, lab in (("dsi_linear", "linear drive"), ("dsi_rect0", "drive, ReLU at 0"),
+                     ("dsi_output", "output (learned threshold)")):
+        m = per_run.groupby(xcol)[col].agg(["mean", "std"]).reindex(xs)
+        a.errorbar(range(len(xs)), m["mean"], yerr=m["std"], marker="o", lw=2, capsize=0, label=lab)
+    a.set(xlabel=xcol, ylabel="DSI (natural movies)")
+    a.legend(frameon=False, fontsize=9)
+    m = per_run.groupby(xcol)["theta_rel"].agg(["mean", "std"]).reindex(xs)
+    b.scatter(per_run[xcol].map(pos), per_run["theta_rel"], s=18, alpha=0.4, lw=0)
+    b.errorbar(range(len(xs)), m["mean"], yerr=m["std"], marker="o", lw=2, capsize=0, c="k")
+    b.axhline(0, ls=":", c="k", lw=0.8)
+    b.set(xlabel=xcol, ylabel=r"threshold / s.d.(drive)")
+    for ax in (a, b):
+        ax.set_xticks(range(len(xs)), [f"{x:g}" for x in xs])
+        for s in ("top", "right"):
+            ax.spines[s].set_visible(False)
+    fig.tight_layout()
+    return fig
