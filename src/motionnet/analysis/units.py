@@ -237,7 +237,7 @@ def collect_drive(model, ck, data, device, max_batches=None):
     valid = slice(ck["valid_start"], None)
     v_std = ck["v_std"].to(device)
     model.eval()
-    out = {k: [] for k in ("y", "drive_sq", "drive_rect", "tgt")}
+    out = {k: [] for k in ("y", "drive_sq", "drive_rect", "drive_mean", "tgt")}
     sd = []
     for i, b in enumerate(batches(data.val, 32)):
         if max_batches and i >= max_batches:
@@ -250,6 +250,7 @@ def collect_drive(model, ck, data, device, max_batches=None):
         out["y"].append(f(model._pool))
         out["drive_sq"].append(f(model._drive_sq))
         out["drive_rect"].append(f(model._drive_rect))
+        out["drive_mean"].append(f(model._drive_mean))
         out["tgt"].append((b["vel_deg_s"].to(device)[:, valid] / v_std).reshape(-1, 2).cpu())
     return {k: torch.cat(v).numpy() for k, v in out.items()}
 
@@ -275,10 +276,11 @@ def threshold_mechanism(folder, data, device, thresh_v=0.5, max_batches=None):
         if f.stem.endswith("_last"):
             continue
         model, ck = load_checkpoint(f, device, data.info)
-        if not hasattr(model, "_drive_sq"):
+        with torch.no_grad():
             model(next(iter(batches(data.val, 2)))["movie"].to(device))
-            if not hasattr(model, "_drive_sq"):
-                raise AttributeError("cnn.py is missing the _drive_sq/_drive_rect diagnostics")
+        missing = [a for a in ("_drive_sq", "_drive_rect", "_drive_mean") if not hasattr(model, a)]
+        if missing:
+            raise AttributeError(f"cnn.py is missing diagnostics {missing} (layer-2 no_grad block)")
         d = collect_drive(model, ck, data, device, max_batches)
         R = unit(model.readout, (1,)).detach().cpu().numpy()
         th = model.threshold2.detach().cpu().numpy()
@@ -295,8 +297,7 @@ def threshold_mechanism(folder, data, device, thresh_v=0.5, max_batches=None):
             null = -sgn * d["tgt"][:, ax] > thresh_v
             drive_sd = float(np.sqrt(d["drive_sq"][:, m].mean()))
             mu = float(d["drive_mean"][:, m].mean())
-            sd = float(np.sqrt(d["drive_sq"][:, m].mean() - mu**2))
-            
+            sd = float(np.sqrt(max(d["drive_sq"][:, m].mean() - mu ** 2, 1e-12)))
             rows.append({
                 "tag": ck["tag"],
                 "loss.lambda_r2": ck["cfg"]["loss"]["lambda_r2"],
@@ -309,34 +310,51 @@ def threshold_mechanism(folder, data, device, thresh_v=0.5, max_batches=None):
                 "theta": float(th[m]),
                 "theta_rel": float(th[m] / (drive_sd + 1e-12)),
                 "gain2": float(model.gain2[m].item()),
-                "drive_mean_rel": mu / sd,                 # where the drive sits relative to 0
-                "z_eff": (th[m] - mu) / sd,                # effective threshold, in s.d. above the drive mean
+                "drive_mean_rel": mu / sd,                                # where the drive sits relative to 0
+                "z_eff": (float(th[m]) - mu) / sd,                        # effective threshold, s.d. above drive mean
                 "net_K": float(unit(model.layer2.weight, (1, 2, 3))[m].sum().item()),   # kernel DC
             })
     return pd.DataFrame(rows)
 
 
 def plot_mechanism(mech, xcol="loss.lambda_r2"):
-    """Left: three DSIs vs lambda (per-run mean over used units). Right: relative threshold."""
+    """(a) three DSIs, (b) effective threshold and drive offset, (c) kernel DC, (d) unit-level link."""
     import matplotlib.pyplot as plt
     per_run = mech.groupby(["tag", xcol]).mean(numeric_only=True).reset_index()
     xs = sorted(per_run[xcol].unique())
-    pos = {x: i for i, x in enumerate(xs)}
-    fig, (a, b) = plt.subplots(1, 2, figsize=(10, 3.6))
-    for col, lab in (("dsi_linear", "linear drive"), ("dsi_rect0", "drive, ReLU at 0"),
-                     ("dsi_output", "output (learned threshold)")):
+
+    def line(ax, col, label=None, **kw):
         m = per_run.groupby(xcol)[col].agg(["mean", "std"]).reindex(xs)
-        a.errorbar(range(len(xs)), m["mean"], yerr=m["std"], marker="o", lw=2, capsize=0, label=lab)
-    a.set(xlabel=xcol, ylabel="DSI (natural movies)")
+        ax.errorbar(range(len(xs)), m["mean"], yerr=m["std"], marker="o", lw=2, capsize=0, label=label, **kw)
+
+    fig, axs = plt.subplots(1, 4, figsize=(19, 3.8))
+    a, b, c, d = axs
+    for col, lab in (("dsi_linear", "linear drive"), ("dsi_rect0", "drive, ReLU at 0"), ("dsi_output", "output")):
+        line(a, col, lab)
+    a.set(ylabel="DSI (natural movies)")
     a.legend(frameon=False, fontsize=9)
-    m = per_run.groupby(xcol)["theta_rel"].agg(["mean", "std"]).reindex(xs)
-    b.scatter(per_run[xcol].map(pos), per_run["theta_rel"], s=18, alpha=0.4, lw=0)
-    b.errorbar(range(len(xs)), m["mean"], yerr=m["std"], marker="o", lw=2, capsize=0, c="k")
+
+    line(b, "z_eff", r"$z_{eff} = (\theta-\mu)/\sigma$", c="k")
+    line(b, "drive_mean_rel", r"$\mu/\sigma$ (drive offset)", c="tab:red")
     b.axhline(0, ls=":", c="k", lw=0.8)
-    b.set(xlabel=xcol, ylabel=r"threshold / s.d.(drive)")
-    for ax in (a, b):
+    b.set(ylabel="s.d. units")
+    b.legend(frameon=False, fontsize=9)
+
+    line(c, "net_K", c="tab:purple")
+    c.axhline(0, ls=":", c="k", lw=0.8)
+    c.set(ylabel="net layer-2 weight (kernel DC)")
+
+    for ax in (a, b, c):
         ax.set_xticks(range(len(xs)), [f"{x:g}" for x in xs])
-        for s in ("top", "right"):
-            ax.spines[s].set_visible(False)
+        ax.set_xlabel(xcol)
+
+    sc = d.scatter(mech["z_eff"], mech["dsi_output"], c=np.log10(mech[xcol] + 1e-3),
+                   s=16, alpha=0.6, lw=0, cmap="viridis")
+    d.set(xlabel=r"$z_{eff}$ (per unit)", ylabel="DSI output (per unit)")
+    fig.colorbar(sc, ax=d, label=f"log10({xcol} + 0.001)")
+
+    for ax in axs:
+        for sp in ("top", "right"):
+            ax.spines[sp].set_visible(False)
     fig.tight_layout()
     return fig
