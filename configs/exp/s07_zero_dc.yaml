@@ -1,0 +1,7 @@
+name: s07_zero_dc
+data: eye31_150fps
+model: base
+grid:
+  model.zero_dc2: [false, true]
+  loss.lambda_r2: [0.0, 0.05]
+  optim.seed: [0, 1, 2]

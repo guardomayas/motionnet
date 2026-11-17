@@ -13,6 +13,7 @@ model:
   layer_noise_std: 0.10    # layer 1, additive, per frame (not rate-scaled)
   layer2_noise_std: 0.0    # layer 2, multiplicative, per frame; off in base, swept in experiments
   readout_bias: true
+  zero_dc2: false
 loss:
   gamma_var: 0.5
   lambda_r1: 0.0           # L1 rate after the nonlinearity, layer 1 (Karklin–Simoncelli)

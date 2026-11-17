@@ -39,7 +39,8 @@ class MotionCNN(nn.Module):
                  layer2_noise_std=0.0,
                  noise_f_ref=75.0,
                  nonlinearity="relu",
-                 readout_bias=True
+                 readout_bias=True,
+                 zero_dc2=False
                  ):
         super().__init__()
 
@@ -110,6 +111,7 @@ class MotionCNN(nn.Module):
         # Readout
         # =======================================================
         self.readout = nn.Parameter(0.1 * torch.randn(2, num_subunits_2))   # rows: v_x, v_y
+        self.zero_dc2 = zero_dc2  # if True, layer-2 kernels are forced to have zero DC (mean) over space
         if readout_bias:
             self.readout_bias = nn.Parameter(torch.zeros(2))
         else:
@@ -148,6 +150,12 @@ class MotionCNN(nn.Module):
         if self.input_noise_std > 0:
             movie = movie + self.input_noise_std * torch.randn_like(movie)
         return movie
+    def layer2_kernel(self):
+        """Effective layer-2 kernels as used in forward(): optionally zero-DC per input channel, then unit norm."""
+        K = self.layer2.weight
+        if self.zero_dc2:
+            K = K - K.mean(dim=(2, 3), keepdim=True)
+        return unit(K, (1, 2, 3))
 
     # -----------------------------------------------------------
     # Forward
@@ -187,7 +195,7 @@ class MotionCNN(nn.Module):
 
         # 3. Layer 2: spatial conv across channels, frame by frame
         x = x.reshape(B * T, N1, H1, W1)
-        K = unit(self.layer2.weight, (1, 2, 3))
+        K = self.layer2_kernel()
         h = self.gain2[None, :, None, None]
         drive = F.conv2d(x, K)                                     # pre-threshold drive
         s = drive - self.threshold2[None, :, None, None]
