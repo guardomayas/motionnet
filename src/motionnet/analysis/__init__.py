@@ -1,1 +1,2 @@
 from .subunit_plots import plot_cnn_subunits_1, plot_cnn_subunits_2
+from .units import *

@@ -194,7 +194,9 @@ class MotionCNN(nn.Module):
 
         self._rate2 = x.mean(dim=(0, 2, 3)).sum()                  # L1 rate cost, before noise
         with torch.no_grad():
-            self._active2 = (x > 0).float().mean(dim=(0, 2, 3))    
+            self._active2 = (x > 0).float().mean(dim=(0, 2, 3))
+            self._rate2_c = x.mean(dim=(0, 2, 3))                  # per-unit <y>
+            self._y2sq_c = x.pow(2).mean(dim=(0, 2, 3))            # per-unit <y^2>    
 
         if self.layer2_noise_std > 0:
             # multiplicative: adds ~ sum_m (R_xm^2 + R_ym^2) <y_m^2> to the loss,

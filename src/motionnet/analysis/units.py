@@ -1,0 +1,228 @@
+"""Per-checkpoint unit analysis: performance, layer-2 tuning, coverage, sparseness.
+
+Convention-free: preferred directions and DSIs come from how each unit's activity
+covaries with the true velocity on natural movies, so no assumption about the sign
+of image motion vs eye motion is needed.
+
+    from motionnet.analysis.units import analyze_sweep, plot_vs
+    runs, units = analyze_sweep(D, data, "cuda")          # D = checkpoint folder
+    plot_vs(runs, "loss.lambda_r2")
+"""
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import torch
+from scipy.signal import convolve2d
+
+from motionnet.dataset import batches
+from motionnet.models.cnn import unit
+from motionnet.train.loop import load_checkpoint
+
+CARDINAL = {"+x": 0.0, "+y": 90.0, "-x": 180.0, "-y": -90.0}
+
+
+# ---------------------------------------------------------------------------
+# Collection
+# ---------------------------------------------------------------------------
+@torch.no_grad()
+def collect(model, ck, data, device, max_batches=None):
+    """Run the validation set once. Returns per-frame arrays (valid frames only)."""
+    valid = slice(ck["valid_start"], None)
+    v_std = ck["v_std"].to(device)
+    model.eval()
+    pools, preds, tgts = [], [], []
+    a1 = r2c = y2c = a2 = 0.0
+    loc_err = loc_n = 0.0
+    nb = 0
+    for i, b in enumerate(batches(data.val, 32)):
+        if max_batches and i >= max_batches:
+            break
+        mv = b["movie"].to(device)
+        B = mv.shape[0]
+        p = model(mv)[:, valid]
+        t = b["vel_deg_s"].to(device)[:, valid] / v_std
+        pools.append(model._pool.reshape(B, -1, model._pool.shape[-1])[:, valid].reshape(-1, model._pool.shape[-1]).cpu())
+        preds.append(p.reshape(-1, 2).cpu())
+        tgts.append(t.reshape(-1, 2).cpu())
+        lv = model._local_v[:, valid]                                    # (B, T, N, 2)
+        loc_err += (lv - t[:, :, None]).pow(2).sum().item()
+        loc_n += lv[..., 0].numel()
+        a1 = a1 + model._active1.cpu()
+        a2 = a2 + model._active2.cpu()
+        r2c = r2c + getattr(model, "_rate2_c", torch.full_like(model._active2, float("nan"))).cpu()
+        y2c = y2c + getattr(model, "_y2sq_c", torch.full_like(model._active2, float("nan"))).cpu()
+        nb += 1
+    T = torch.cat(tgts)
+    return dict(pool=torch.cat(pools).numpy(), pred=torch.cat(preds).numpy(), tgt=T.numpy(),
+                active1=(a1 / nb).numpy(), active2=(a2 / nb).numpy(),
+                rate2_c=(r2c / nb).numpy(), y2sq_c=(y2c / nb).numpy(),
+                local_nmse=loc_err / loc_n / T.var(0).mean().item() / 2)
+
+
+# ---------------------------------------------------------------------------
+# Linear space-time RF (secondary DS measure)
+# ---------------------------------------------------------------------------
+def layer2_st_rf(model):
+    """(C2, D, H, W) linearised RF per layer-2 unit; exact only where layer 1 is linear."""
+    S = unit(model.spatial_kernel, (1, 2, 3))[:, 0].detach().cpu().numpy()
+    phi = unit(model.temporal_w @ model.tbasis.T, (1,)).detach().cpu().numpy()
+    g = model.gain.detach().cpu().numpy()
+    K = unit(model.layer2.weight, (1, 2, 3)).detach().cpu().numpy()
+    C2, C1 = K.shape[:2]
+    sp = np.stack([[g[c] * convolve2d(K[m, c], S[c], mode="full") for c in range(C1)] for m in range(C2)])
+    return np.einsum("mcyx,cd->mdyx", sp, phi)
+
+
+def st_dsi(rf2d):
+    """Quadrant-energy index of a (lag, space) filter: +-1 = one direction only, 0 = separable."""
+    F = np.abs(np.fft.fftshift(np.fft.fft2(rf2d))) ** 2
+    w = np.fft.fftshift(np.fft.fftfreq(rf2d.shape[0]))[:, None]
+    k = np.fft.fftshift(np.fft.fftfreq(rf2d.shape[1]))[None, :]
+    pos, neg = F[(w * k) > 0].sum(), F[(w * k) < 0].sum()
+    return float((pos - neg) / (pos + neg + 1e-12))
+
+
+# ---------------------------------------------------------------------------
+# Unit and run tables
+# ---------------------------------------------------------------------------
+def _nearest_cardinal(angle, tol=30.0):
+    for name, a in CARDINAL.items():
+        if abs((angle - a + 180) % 360 - 180) <= tol:
+            return name
+    return "oblique"
+
+
+def unit_table(model, st, thresh_v=0.5, used_w=0.05, used_active=0.01):
+    """One row per layer-2 unit."""
+    R = unit(model.readout, (1,)).detach().cpu().numpy()                 # (2, C2)
+    pool, tgt = st["pool"], st["tgt"]
+    rf = layer2_st_rf(model)
+    rows = []
+    for m in range(pool.shape[1]):
+        y = pool[:, m]
+        # empirical tuning: regression of activity on velocity (convention-free)
+        X = np.c_[tgt, np.ones(len(tgt))]
+        beta = np.linalg.lstsq(X, y, rcond=None)[0][:2]
+        ang = float(np.degrees(np.arctan2(beta[1], beta[0])))
+        ax = int(abs(beta[1]) > abs(beta[0]))                           # 0 = x, 1 = y
+        sgn = np.sign(beta[ax])
+        pref = sgn * tgt[:, ax] > thresh_v
+        null = -sgn * tgt[:, ax] > thresh_v
+        yp, yn = y[pref].mean(), y[null].mean()
+        mean_y, mean_y2 = st["rate2_c"][m], st["y2sq_c"][m]
+        rows.append(dict(
+            unit=m + 1,
+            w=float((R[:, m] ** 2).sum()),
+            readout_angle=float(np.degrees(np.arctan2(R[1, m], R[0, m]))),
+            pref_angle=ang,
+            pref_dir=_nearest_cardinal(ang),
+            vdsi=float((yp - yn) / (abs(yp) + abs(yn) + 1e-12)),        # natural-movie DSI along preferred axis
+            null_over_pref=float(yn / (yp + 1e-12)),
+            active=float(st["active2"][m]),
+            rate=float(mean_y),
+            sparseness=float(1 - mean_y ** 2 / (mean_y2 + 1e-12)),       # Treves-Rolls (lifetime, per location)
+            st_dsi=abs(st_dsi(rf[m].sum(1 + (1 - ax)))),                 # |linear-RF DSI| on the preferred axis
+        ))
+    df = pd.DataFrame(rows)
+    df["used"] = (df.w > used_w) & (df.active > used_active)
+    df["always_on"] = df.active > 0.95
+    return df
+
+
+def run_row(u, st, model):
+    """One row per checkpoint: summaries over units + performance."""
+    pred, tgt = st["pred"], st["tgt"]
+    used = u[u.used]
+    dirs = set(used.loc[used.pref_dir != "oblique", "pref_dir"])
+    row = dict(
+        n_used=int(len(used)),
+        n_dead=int((~u.used).sum()),
+        n_always_on=int(u.always_on.sum()),
+        n_dirs=len(dirs),
+        n_opponent_axes=int({"+x", "-x"} <= dirs) + int({"+y", "-y"} <= dirs),
+        vdsi_mean=float(used.vdsi.mean()) if len(used) else np.nan,
+        null_over_pref=float(used.null_over_pref.median()) if len(used) else np.nan,
+        st_dsi_mean=float(used.st_dsi.mean()) if len(used) else np.nan,
+        sparseness=float(used.sparseness.mean()) if len(used) else np.nan,
+        active2=float(u.active.mean()),
+        active1=float(st["active1"].mean()),
+        gain1_mean=model.gain.mean().item(),
+        local_nmse=st["local_nmse"],
+        bias_x=model.readout_bias[0].item(), bias_y=model.readout_bias[1].item(),
+    )
+    for k, ax in enumerate("xy"):                                       # shrinkage per direction
+        for s, lab in ((1, "+"), (-1, "-")):
+            msk = s * tgt[:, k] > 0.5
+            row[f"gain_{lab}{ax}"] = float((pred[msk, k] * tgt[msk, k]).sum() / (tgt[msk, k] ** 2).sum())
+    return row
+
+
+def _flat(d, prefix=""):
+    out = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            out.update(_flat(v, f"{prefix}{k}."))
+        else:
+            out[f"{prefix}{k}"] = v
+    return out
+
+
+def analyze_sweep(folder, data, device, max_batches=None):
+    """Analyse every finished checkpoint in a sweep folder.
+
+    Returns (runs, units): runs has one row per checkpoint with the full config
+    flattened into dotted columns ('loss.lambda_r2', ...) and the summary.csv metrics;
+    units has one row per (checkpoint, layer-2 unit).
+    """
+    folder = Path(folder)
+    summary = pd.read_csv(folder / "summary.csv") if (folder / "summary.csv").exists() else None
+    runs, units = [], []
+    for f in sorted(folder.glob("*.pt")):
+        if f.stem.endswith("_last"):
+            continue
+        model, ck = load_checkpoint(f, device, data.info)
+        st = collect(model, ck, data, device, max_batches)
+        u = unit_table(model, st)
+        cfg = _flat({k: ck["cfg"][k] for k in ("model", "loss", "optim")})
+        row = {"tag": ck["tag"], **cfg, **run_row(u, st, model)}
+        runs.append(row)
+        units.append(u.assign(tag=ck["tag"], **{k: cfg[k] for k in ("loss.lambda_r1", "loss.lambda_r2", "loss.gamma_var",
+                                                                     "model.layer2_noise_std", "optim.seed") if k in cfg}))
+    runs = pd.DataFrame(runs)
+    if summary is not None:
+        keep = [c for c in summary.columns if c == "tag" or c not in runs.columns]
+        runs = runs.merge(summary[keep], on="tag", how="left")
+    return runs, pd.concat(units, ignore_index=True)
+
+
+# ---------------------------------------------------------------------------
+# Plot
+# ---------------------------------------------------------------------------
+DEFAULT_PANELS = [("nmse", "nmse"), ("rate2", "layer-2 rate"), ("sparseness", "sparseness (TR)"),
+                  ("vdsi_mean", "DSI (natural movies)"), ("null_over_pref", "null / pref"),
+                  ("n_dirs", "directions covered"), ("n_opponent_axes", "opponent axes"),
+                  ("st_dsi_mean", "|linear-RF DSI|")]
+
+
+def plot_vs(runs, xcol, panels=DEFAULT_PANELS, ncols=4):
+    """Each panel: seeds as dots, mean +- sd as a line, x as categories (works for lambda = 0)."""
+    import matplotlib.pyplot as plt
+    xs = sorted(runs[xcol].unique())
+    pos = {x: i for i, x in enumerate(xs)}
+    panels = [(c, l) for c, l in panels if c in runs.columns]
+    nrows = int(np.ceil(len(panels) / ncols))
+    fig, axs = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3.2 * nrows), squeeze=False)
+    for a, (col, lab) in zip(axs.flat, panels):
+        x = runs[xcol].map(pos)
+        a.scatter(x + np.random.uniform(-0.08, 0.08, len(x)), runs[col], s=18, alpha=0.4, lw=0)
+        m = runs.groupby(xcol)[col].agg(["mean", "std"]).reindex(xs)
+        a.errorbar(range(len(xs)), m["mean"], yerr=m["std"], marker="o", lw=2, capsize=0)
+        a.set_xticks(range(len(xs)), [f"{x:g}" for x in xs])
+        a.set(xlabel=xcol, ylabel=lab)
+        for s in ("top", "right"):
+            a.spines[s].set_visible(False)
+    for a in axs.flat[len(panels):]:
+        a.axis("off")
+    fig.tight_layout()
+    return fig
