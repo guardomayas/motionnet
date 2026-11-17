@@ -1,0 +1,10 @@
+name: s04_backend_noise
+data: eye31_150fps
+model: base
+fixed:
+  loss.lambda_r1: 0.0
+  loss.lambda_r2: 0.0
+grid:
+  loss.gamma_var: [0.0, 0.5, 1.0]
+  model.layer2_noise_std: [0.0, 0.3]
+  optim.seed: [0, 1, 2]
