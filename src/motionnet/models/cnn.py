@@ -39,6 +39,7 @@ class MotionCNN(nn.Module):
                  layer2_noise_std=0.0,
                  noise_f_ref=75.0,
                  nonlinearity="relu",
+                 readout_bias=True
                  ):
         super().__init__()
 
@@ -109,6 +110,11 @@ class MotionCNN(nn.Module):
         # Readout
         # =======================================================
         self.readout = nn.Parameter(0.1 * torch.randn(2, num_subunits_2))   # rows: v_x, v_y
+        if readout_bias:
+            self.readout_bias = nn.Parameter(torch.zeros(2))
+        else:
+            self.register_buffer("readout_bias", torch.zeros(2))            # fixed at 0, not trained
+        self.out_gain = out_gain
         self.out_gain = out_gain                                            # fixed float, NOT a Parameter
 
         with torch.no_grad():
@@ -200,6 +206,6 @@ class MotionCNN(nn.Module):
         # 4. Linear readout per location, then pool over space
         self._pool = x.mean(dim=(-1, -2)).detach()                 # (B*T, N2), diagnostics
         R = unit(self.readout, (1,))                               # unit rows
-        local = self.out_gain * torch.einsum("bnhw,kn->bhwk", x, R)
+        local = self.out_gain * torch.einsum("bnhw,kn->bhwk", x, R) + self.readout_bias
         self._local_v = local.reshape(B, T, H2 * W2, 2)            # (B, T, N, 2)
         return self._local_v.mean(2)

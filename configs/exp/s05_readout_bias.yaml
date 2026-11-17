@@ -1,0 +1,6 @@
+name: s05_readout_bias
+data: eye31_150fps
+model: base
+grid:
+  model.readout_bias: [false, true]
+  optim.seed: [0, 1, 2]
