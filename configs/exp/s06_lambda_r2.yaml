@@ -2,5 +2,5 @@ name: s06_lambda_r2
 data: eye31_150fps
 model: base                 # readout_bias: true, gamma_var 0.5, sigma2 0
 grid:
-  loss.lambda_r2: [0.0, 0.001, 0.01, 0.05]
+  loss.lambda_r2: [0.0, 0.01, 0.05, 0.1, 0.2, 0.5]
   optim.seed: [0, 1, 2]
