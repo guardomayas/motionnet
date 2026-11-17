@@ -19,6 +19,11 @@ from motionnet.dataset import batches
 from motionnet.models.cnn import unit
 from motionnet.train.loop import load_checkpoint
 
+
+def _K(model):
+    """Effective layer-2 kernels (handles zero_dc2); falls back for older model code."""
+    return model.layer2_kernel() if hasattr(model, "layer2_kernel") else unit(model.layer2.weight, (1, 2, 3))
+
 CARDINAL = {"+x": 0.0, "+y": 90.0, "-x": 180.0, "-y": -90.0}
 
 
@@ -68,7 +73,7 @@ def layer2_st_rf(model):
     S = unit(model.spatial_kernel, (1, 2, 3))[:, 0].detach().cpu().numpy()
     phi = unit(model.temporal_w @ model.tbasis.T, (1,)).detach().cpu().numpy()
     g = model.gain.detach().cpu().numpy()
-    K = unit(model.layer2.weight, (1, 2, 3)).detach().cpu().numpy()
+    K = _K(model).detach().cpu().numpy()
     C2, C1 = K.shape[:2]
     sp = np.stack([[g[c] * convolve2d(K[m, c], S[c], mode="full") for c in range(C1)] for m in range(C2)])
     return np.einsum("mcyx,cd->mdyx", sp, phi)
@@ -296,12 +301,17 @@ def threshold_mechanism(folder, data, device, thresh_v=0.5, max_batches=None):
             pref = sgn * d["tgt"][:, ax] > thresh_v
             null = -sgn * d["tgt"][:, ax] > thresh_v
             drive_sd = float(np.sqrt(d["drive_sq"][:, m].mean()))
+            # per-frame effective threshold, from each frame's spatial mean and s.d. of the drive
+            mu_f = d["drive_mean"][:, m]
+            sd_f = np.sqrt(np.maximum(d["drive_sq"][:, m] - mu_f ** 2, 1e-12))
+            z_f = (th[m] - mu_f) / sd_f
             mu = float(d["drive_mean"][:, m].mean())
             sd = float(np.sqrt(max(d["drive_sq"][:, m].mean() - mu ** 2, 1e-12)))
             rows.append({
                 "tag": ck["tag"],
                 "loss.lambda_r2": ck["cfg"]["loss"]["lambda_r2"],
                 "loss.lambda_r1": ck["cfg"]["loss"]["lambda_r1"],
+                "model.zero_dc2": ck["cfg"]["model"].get("zero_dc2", False),
                 "optim.seed": ck["cfg"]["optim"]["seed"],
                 "unit": m + 1,
                 "dsi_linear": _dsi(d["drive_sq"][:, m], pref, null),
@@ -312,7 +322,9 @@ def threshold_mechanism(folder, data, device, thresh_v=0.5, max_batches=None):
                 "gain2": float(model.gain2[m].item()),
                 "drive_mean_rel": mu / sd,                                # where the drive sits relative to 0
                 "z_eff": (float(th[m]) - mu) / sd,                        # effective threshold, s.d. above drive mean
-                "net_K": float(unit(model.layer2.weight, (1, 2, 3))[m].sum().item()),   # kernel DC
+                "net_K": float(_K(model)[m].sum().item()),
+                "z_frame_sd": float(z_f.std()),                            # how much the effective threshold moves
+                "z_vs_contrast": float(np.corrcoef(z_f, np.log(sd_f))[0, 1]),   # ~0 if the threshold tracks contrast   # kernel DC
             })
     return pd.DataFrame(rows)
 
